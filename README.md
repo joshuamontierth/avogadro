@@ -75,9 +75,16 @@ plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>
 frontend/              the page: index.html, app.css, app.js, cloud.js, fonts
 Caddyfile              static files, the SearXNG routes, security headers
 docker-compose.yml     the two containers
+LICENSE                AGPL-3.0
 ```
+
+## License
+
+Avogadro is free software under the GNU Affero General Public License, version 3 or (at your option) any later version; see [LICENSE](LICENSE). If you run a modified version as a service for others, the AGPL asks you to offer them its source.
+
+The bundled Hanken Grotesk font keeps its own license, the SIL Open Font License 1.1; see `frontend/fonts/OFL.txt`.
 
 ## Credits
 
-- [SearXNG](https://github.com/searxng/searxng) does the searching (AGPL-3.0). `plugins/avogadro.py` runs inside it and is AGPL-3.0-or-later.
-- [Hanken Grotesk](https://github.com/marcologous/hanken-grotesk) is the typeface, under the SIL Open Font License 1.1; see `frontend/fonts/OFL.txt`.
+- [SearXNG](https://github.com/searxng/searxng) does the searching (AGPL-3.0).
+- [Hanken Grotesk](https://github.com/marcologous/hanken-grotesk) is the typeface.
