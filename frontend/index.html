@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Avogadro</title>
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#04070c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#e6eaee" media="(prefers-color-scheme: light)">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="search" type="application/opensearchdescription+xml" title="Avogadro" href="/opensearch.xml">
+<link rel="preload" href="/fonts/hanken-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+<script src="/boot.js"></script>
+<script src="/cloud.js" defer></script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+<canvas id="cloud" aria-hidden="true"></canvas>
+
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20 20"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M17 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4"/></symbol>
+</svg>
+
+<header class="bar">
+  <a class="mark" href="/" aria-label="Avogadro home">Avogadro</a>
+  <form class="query" role="search" action="/" method="get" autocomplete="off">
+    <svg class="query-icon" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="q" name="q" type="search" spellcheck="false" autocapitalize="off" autocorrect="off"
+      enterkeyhint="search" aria-label="Search" role="combobox" aria-autocomplete="list"
+      aria-controls="suggest" aria-expanded="false">
+    <button type="button" class="query-clear" aria-label="Clear search" hidden><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    <ul id="suggest" class="suggest" role="listbox" aria-label="Suggestions" hidden></ul>
+  </form>
+  <nav class="tabs" aria-label="Result type">
+    <div class="tabs-scroll">
+      <button type="button" data-cat="general">All</button>
+      <button type="button" data-cat="images">Images</button>
+      <button type="button" data-cat="news">News</button>
+      <button type="button" data-cat="videos">Videos</button>
+      <button type="button" data-cat="it">IT</button>
+      <button type="button" data-cat="science">Science</button>
+    </div>
+    <label class="when">
+      <span class="sr">Time</span>
+      <select id="time">
+        <option value="">Any time</option>
+        <option value="day">Past day</option>
+        <option value="week">Past week</option>
+        <option value="month">Past month</option>
+        <option value="year">Past year</option>
+      </select>
+    </label>
+  </nav>
+</header>
+
+<main class="page" id="page">
+  <div class="filters" id="filters"></div>
+  <div class="lead" id="lead"></div>
+  <aside class="side" id="side"></aside>
+  <section class="list" id="list" aria-label="Results"></section>
+  <div class="foot" id="foot"></div>
+</main>
+
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-stage"></div>
+  <div class="viewer-info">
+    <p class="viewer-title"></p>
+    <p class="viewer-meta"></p>
+    <div class="viewer-actions">
+      <a class="btn viewer-page" target="_blank" rel="noreferrer noopener">Visit page</a>
+      <a class="btn btn-quiet viewer-full" target="_blank" rel="noreferrer noopener">Open image</a>
+    </div>
+  </div>
+  <button type="button" class="icon-btn viewer-prev" aria-label="Previous image"><svg aria-hidden="true"><use href="#i-left"/></svg></button>
+  <button type="button" class="icon-btn viewer-next" aria-label="Next image"><svg aria-hidden="true"><use href="#i-right"/></svg></button>
+  <button type="button" class="icon-btn viewer-close" aria-label="Close"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+</div>
+
+<p class="sr" id="status" aria-live="polite"></p>
+</body>
+</html>

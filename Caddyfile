@@ -1,0 +1,56 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# Avogadro on :8080. The page may only load from this origin (the CSP), and links
+# never pass the search on as a referrer.
+:8080 {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# SearXNG: suggestions, the image proxy and favicons.
+	@api path /autocompleter /image /favicon/*
+	handle @api {
+		reverse_proxy searxng:8080
+	}
+
+	# SearXNG: JSON search.
+	@json {
+		path /search
+		query format=json
+	}
+	handle @json {
+		reverse_proxy searxng:8080
+	}
+
+	# The browser search-engine description, filled in with SEARXNG_BASE_URL.
+	handle /opensearch.xml {
+		root * /srv
+		templates {
+			mime text/xml application/opensearchdescription+xml
+		}
+		header Content-Type "application/opensearchdescription+xml; charset=utf-8"
+		file_server
+	}
+
+	# Old links and browser engines that point at SearXNG's own results page.
+	handle /search {
+		redir * /?{query} 302
+	}
+
+	handle {
+		root * /srv
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,32 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    # Runs as the image's own searxng user rather than root.
+    user: "977:977"
+    # No published port: only the avogadro container talks to it.
+    env_file: .env
+    volumes:
+      - ./config/settings.yml:/etc/searxng/settings.yml:ro
+      - ./plugins/avogadro.py:/usr/local/searxng/searx/plugins/avogadro.py:ro
+      - searxng_cache:/var/cache/searxng
+
+  # The Avogadro page, plus the few SearXNG routes it uses.
+  avogadro:
+    image: docker.io/library/caddy:2-alpine
+    container_name: avogadro
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    # SEARXNG_BASE_URL fills in the browser search-engine description (opensearch.xml).
+    env_file: .env
+    # Loopback only: put a reverse proxy or `tailscale serve` in front of it.
+    ports:
+      - "127.0.0.1:${AVOGADRO_PORT:-8888}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend:/srv:ro
+
+volumes:
+  searxng_cache:

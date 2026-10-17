@@ -1,0 +1,10 @@
+# SearXNG's secret key and this host's address live here; see .env.example.
+.env
+
+# Agent and design-process files (Impeccable's product record, design system and working files).
+PRODUCT.md
+DESIGN.md
+.impeccable/
+.claude/
+CLAUDE.md
+AGENTS.md
