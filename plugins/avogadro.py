@@ -21,6 +21,7 @@ for SearXNG's own image proxy at ``/image``, and adds ``/favicon/<host>``, which
 answers from SearXNG's favicon resolver cache.
 """
 
+import logging
 import re
 import threading
 import typing as t
@@ -39,6 +40,8 @@ if t.TYPE_CHECKING:
     from searx.plugins import PluginCfg
     from searx.result_types import Result
     from searx.search import SearchWithPlugins
+
+log = logging.getLogger("searx.plugins.avogadro")
 
 IMAGE_FIELDS = ("img_src", "thumbnail", "thumbnail_src")
 HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+(:\d{1,5})?$")
@@ -158,15 +161,36 @@ def blank(value: t.Any) -> bool:
     return value is None or value == "" or (isinstance(value, (list, set, tuple, dict)) and not value)
 
 
+_MISSING = object()
+
+
+def field_names(item: t.Any) -> list[str]:
+    """The fields of a typed result, or the keys of a legacy (dict) result."""
+    fields = getattr(type(item), "__struct_fields__", None)
+    if fields is not None:
+        return list(fields)
+    return list(item.keys()) if isinstance(item, dict) else []
+
+
+def get_field(item: t.Any, name: str) -> t.Any:
+    if isinstance(item, dict):
+        return item.get(name)  # a legacy result simply lacks fields it never set
+    try:
+        return item[name]
+    except (KeyError, AttributeError):
+        return _MISSING  # not a field of this result type
+
+
 def fill_gaps(into: t.Any, other: t.Any) -> None:
-    """Copy fields ``into`` lacks from ``other`` (SearXNG's own merge skips fields set to "")."""
-    names = getattr(type(into), "__struct_fields__", None) or list(other.keys())
-    for name in names:
+    """Copy fields ``into`` lacks from ``other`` (SearXNG's own merge skips fields set to "").
+
+    The two copies can be different kinds of result (a typed result and a legacy dict).
+    """
+    for name in dict.fromkeys(field_names(into) + field_names(other)):
         if name in OWN_FIELDS:
             continue
-        try:
-            mine, theirs = into[name], other[name]
-        except (KeyError, AttributeError):
+        mine, theirs = get_field(into, name), get_field(other, name)
+        if mine is _MISSING or theirs is _MISSING:
             continue
         if blank(mine) and not blank(theirs):
             try:
@@ -203,11 +227,23 @@ def merge_copies(search: t.Any, result: t.Any) -> None:
     target, first = aliases.resolve(keys, clean, result) if aliases else (clean, result)
     if first is not result:
         # Whichever copy SearXNG keeps should carry both copies' links and metadata.
-        fill_gaps(first, result)
-        fill_gaps(result, first)
+        # This is a nicety: it must never stop the merge below.
+        try:
+            fill_gaps(first, result)
+            fill_gaps(result, first)
+        except Exception:  # pylint: disable=broad-except
+            log.exception("could not fill gaps between copies of %s", target)
     if target != url:
         result["url"] = target
         result["parsed_url"] = urlparse(target)
+
+
+def process(search: t.Any, result: t.Any) -> None:
+    """Everything this plugin does to one result, in order."""
+    # Proxy images first: merging copies fields between copies, and only proxied
+    # image URLs may travel that way.
+    swap_images(result)
+    merge_copies(search, result)
 
 
 def favicon(host: str):
@@ -247,8 +283,7 @@ class SXNGPlugin(Plugin):
         return True
 
     def on_result(self, request: "SXNG_Request", search: "SearchWithPlugins", result: "Result") -> bool:
-        merge_copies(search, result)
-        swap_images(result)
+        process(search, result)
         return True
 
     def post_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> None:
