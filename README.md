@@ -73,6 +73,8 @@ docker compose restart
 config/settings.yml    SearXNG overrides (engines, plugin, favicon resolver)
 plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>
 frontend/              the page: index.html, app.css, app.js, cloud.js, fonts
+android/               the Android app (Kotlin, Compose); build.sh builds and installs it
+logo/                  the mark: orbital.html draws it, render.sh writes the web and Android icons
 Caddyfile              static files, the SearXNG routes, security headers
 docker-compose.yml     the two containers
 LICENSE                AGPL-3.0

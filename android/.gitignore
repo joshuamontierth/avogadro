@@ -1,0 +1,13 @@
+# Build caches and outputs
+.gradle/
+.kotlin/
+build/
+app/build/
+dist/
+local.properties
+*.iml
+.idea/
+# This instance's address (written by build.sh from ../.env)
+avogadro.properties
+# Release signing key and its password: never commit; back it up separately
+keystore/

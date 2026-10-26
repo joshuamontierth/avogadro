@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Daylight tokens (DESIGN.md -day keys); values-night holds the dark felt. -->
+    <color name="felt">#FFE6EAEE</color>
+    <color name="felt_2">#FFF4F6F8</color>
+    <color name="vapor">#FF0D1520</color>
+    <color name="vapor_3">#FF566173</color>
+    <color name="seam_2">#2E0D1520</color>
+</resources>

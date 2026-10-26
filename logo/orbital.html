@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Avogadro mark</title>
+<!--
+  The Avogadro mark: a hydrogen 3d z² orbital drawn the way frontend/cloud.js draws the background,
+  as positions sampled from |ψ|². The lobes (one sign of the wavefunction) are white, the ring
+  around them (the other sign) is blue, and the nucleus is amber.
+
+  logo/render.sh opens this page in headless Chrome and unpacks the files it lists in #out.
+  Every file is drawn from the same samples at 10 px per unit of Android's 108-unit icon grid,
+  then halved down to its size, so the mark looks the same at every size.
+-->
+<pre id="out"></pre>
+<script>
+"use strict";
+
+const FELT = "#04070c", AMBER = "#f0b45e";
+const VAPOR = [230, 237, 246], LED = [140, 202, 255];
+
+// Seeded, so every render places the same points.
+let seed = 6022;
+const rnd = () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+const normal = () => Math.sqrt(-2 * Math.log(rnd() || 1e-12)) * Math.cos(2 * Math.PI * rnd());
+function gamma(k, scale) { // Marsaglia and Tsang, k >= 1
+  const d = k - 1 / 3, c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    let x, v;
+    do { x = normal(); v = 1 + c * x; } while (v <= 0);
+    v = v * v * v;
+    if (Math.log(rnd()) < 0.5 * x * x + d - d * v + d * Math.log(v)) return d * v * scale;
+  }
+}
+
+// ψ(3d z²) ∝ r² e^(−r/3) (3cos²θ − 1). Like cloud.js, the radial part is sharpened to the power
+// 1.7 so the shells read as shapes; the angular part only to 1.4 so the ring keeps enough points.
+const P = 1.7, PA = 1.4, ELEV = (19 * Math.PI) / 180, N = 9000, REACH = 30.5;
+const raw = [];
+while (raw.length < N) {
+  const r = gamma(4 * P + 3, 3 / (2 * P));
+  const u = rnd() * 2 - 1, a = 3 * u * u - 1;
+  if (rnd() * Math.pow(4, PA) > Math.pow(a * a, PA)) continue;
+  const phi = rnd() * 2 * Math.PI, s = Math.sqrt(1 - u * u);
+  const x = r * s * Math.cos(phi), y = r * s * Math.sin(phi), z = r * u;
+  // Seen from 19° above the ring's plane, z up.
+  raw.push({ x, y: z * Math.cos(ELEV) + y * Math.sin(ELEV), depth: y * Math.cos(ELEV) - z * Math.sin(ELEV), plus: a > 0 });
+}
+// Scale so all but the outermost 1.5% of points stay within REACH units of the nucleus, vertically.
+const ext = raw.map((p) => Math.abs(p.y)).sort((a, b) => a - b)[Math.floor(N * 0.985)];
+const points = raw.map((p) => {
+  const near = Math.max(0, Math.min(1, 0.5 - (p.depth / ext) * 0.6));
+  return {
+    x: (p.x / ext) * REACH, y: (p.y / ext) * REACH, plus: p.plus,
+    r: 0.3 + 0.2 * near,
+    a: p.plus ? 0.13 + 0.24 * near : 0.24 + 0.5 * near,
+  };
+});
+
+const MASTER = 10; // px per unit
+
+// half: units shown either side of the nucleus. back: none | square | rounded | circle.
+function master(half, back, mono) {
+  const px = Math.round(2 * half * MASTER), c = px / 2, k = MASTER;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = px;
+  const g = cv.getContext("2d");
+  if (back !== "none") {
+    const edge = new Path2D();
+    if (back === "circle") edge.arc(c, c, c, 0, 2 * Math.PI);
+    else if (back === "rounded") edge.roundRect(0, 0, px, px, px * (7.5 / 32));
+    else edge.rect(0, 0, px, px);
+    g.clip(edge);
+    g.fillStyle = FELT;
+    g.fillRect(0, 0, px, px);
+    const glow = g.createRadialGradient(c, c, 0, c, c, 46 * k);
+    glow.addColorStop(0, "rgba(140,202,255,0.2)");
+    glow.addColorStop(0.55, "rgba(140,202,255,0.05)");
+    glow.addColorStop(1, "rgba(140,202,255,0)");
+    g.fillStyle = glow;
+    g.fillRect(0, 0, px, px);
+  }
+  g.globalCompositeOperation = "lighter"; // light adds up where samples crowd
+  for (const p of points) {
+    const [r, gr, b] = mono || p.plus ? VAPOR : LED;
+    g.fillStyle = mono ? `rgba(255,255,255,${p.a})` : `rgba(${r},${gr},${b},${p.a})`;
+    g.beginPath();
+    g.arc(c + p.x * k, c - p.y * k, p.r * k, 0, 2 * Math.PI);
+    g.fill();
+  }
+  g.globalCompositeOperation = "source-over";
+  g.fillStyle = mono ? "#ffffff" : AMBER;
+  g.beginPath();
+  g.arc(c, c, 1.5 * k, 0, 2 * Math.PI);
+  g.fill();
+  return cv;
+}
+
+function shrink(src, px) { // halve while we can, for a clean downsample
+  let cv = src;
+  while (cv.width >= px * 2) cv = draw(cv, Math.round(cv.width / 2));
+  return cv.width === px ? cv : draw(cv, px);
+}
+function draw(src, px) {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = px;
+  const g = cv.getContext("2d");
+  g.imageSmoothingQuality = "high";
+  g.drawImage(src, 0, 0, px, px);
+  return cv;
+}
+
+const files = {};
+const RES = "android/app/src/main/res";
+const DENSITIES = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 };
+
+// Android adaptive icon: transparent layers on the 108 dp grid; the felt and glow are
+// drawable/ic_launcher_background.xml. The monochrome layer is the themed-icon alpha mask.
+const fore = master(54, "none", false), mask = master(54, "none", true);
+// Home-screen widget: a round 28 dp badge, dark in both themes.
+const badge = master(40, "circle", false);
+for (const [name, scale] of Object.entries(DENSITIES)) {
+  files[`${RES}/mipmap-${name}/ic_launcher_foreground.png`] = shrink(fore, 108 * scale).toDataURL();
+  files[`${RES}/mipmap-${name}/ic_launcher_monochrome.png`] = shrink(mask, 108 * scale).toDataURL();
+  files[`${RES}/drawable-${name}/ic_orbital.png`] = shrink(badge, 28 * scale).toDataURL();
+}
+
+// Web: an SVG favicon (opensearch.xml names it too) holding a 128 px rendering cropped close.
+const fav = shrink(master(37, "rounded", false), 128).toDataURL();
+files["frontend/favicon.svg"] = "data:image/svg+xml;base64," + btoa(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+  `<image href="${fav}" width="32" height="32"/></svg>\n`);
+// iOS and "Add to home screen": full bleed, the system rounds the corners.
+files["frontend/apple-touch-icon.png"] = shrink(master(46, "square", false), 180).toDataURL();
+
+document.getElementById("out").textContent = JSON.stringify(files);
+</script>
