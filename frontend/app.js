@@ -252,6 +252,8 @@
     const intent = !append && state.cat === "general" ? stockIntent(state.q) : null;
     const guess = stockGuess(intent);
     const early = guess ? loadStock(guess, "1D", ctrl.signal) : null;
+    const ask = !append && state.cat === "general" && askIntent(state.q);
+    if (ask) warmAnswers();
 
     let data;
     try {
@@ -281,7 +283,7 @@
       }
     }
     setLoading(false);
-    render(data, append, stock);
+    render(data, append, stock, ask && ctrl);
   }
 
   function clear() {
@@ -297,7 +299,7 @@
     sel = -1;
   }
 
-  function render(data, append, stock) {
+  function render(data, append, stock, ask) {
     if (!append) {
       clear();
       lastData = data;
@@ -312,6 +314,9 @@
 
     if (!append) {
       if (stock) lead.append(stockCard(stock));
+      // SearXNG's own instant answers (sums, conversions) need no model.
+      const sources = ask && !(data.answers || []).length ? askSources(data.results || []) : [];
+      if (sources.length >= 2) lead.append(answerCard(state.q, sources, ask.signal));
       renderLead(data);
       if (state.cat === "general" && data.infoboxes && data.infoboxes.length) renderInfobox(data.infoboxes[0]);
     }
@@ -720,6 +725,111 @@
     return out;
   }
 
+  // ---------- answers ----------
+  // A question ("how tall is everest", "boiling point of water", "rust vs go") gets a short
+  // answer above the results from this server's /answer, written by a local model from the
+  // top results' pages, each sentence citing the results it came from. Typing a question
+  // wakes the model so it is ready by the time the results are.
+
+  const ASK_WH = /^(who|whom|whose|what|what['’]?s|when|where|why|how|which)\s/i;
+  const ASK_AUX = /^(is|are|was|were|am|do|does|did|can|could|should|would|has|have|had)\s/i;
+  const ASK_ANY = /\?$|\b(vs\.?|versus|difference between|meaning of|definition of|define|explain)\s|\bmeaning$/i;
+  const ASK_FACT = /\b(population|capital of|height|elevation|distance|speed of|boiling point|melting point|freezing point|density|half[- ]life|net worth|release date|side effects|symptoms|life expectancy|lifespan|calories|atomic (number|mass|weight)|exchange rate|gdp|time ?zone|diameter|wavelength)\b/i;
+  const ASK_SOURCES = 5;
+
+  function askIntent(q) {
+    const words = q.split(/\s+/).filter(Boolean);
+    if (words.length < 2 || q.length > 200 || /^[!$]|\bsite:|:\/\//i.test(q)) return false;
+    if (ASK_WH.test(q) || ASK_ANY.test(q)) return true;
+    if (ASK_AUX.test(q)) return words.length >= 3;
+    return ASK_FACT.test(q);
+  }
+
+  let warmedAt = 0;
+  function warmAnswers() {
+    if (Date.now() - warmedAt < 60000) return;
+    warmedAt = Date.now();
+    fetch("/answer/warm", { method: "POST" }).catch(() => {});
+  }
+
+  function askSources(results) {
+    const out = [];
+    for (const r of results) {
+      const url = safeUrl(r.url);
+      if (!url || r.template === "videos.html" || r.template === "images.html" || out.some((s) => s.url === url)) continue;
+      out.push({ url, title: plain(r.title), content: plain(r.content) });
+      if (out.length === ASK_SOURCES) break;
+    }
+    return out;
+  }
+
+  // Waiting lines until the first words, then the answer as it is written; the card goes
+  // away if the results don't answer the question or the model can't be reached.
+  function answerCard(q, sources, signal) {
+    const text = h("p", { class: "ask-text" });
+    const cited = h("div", { class: "ask-src" });
+    const card = h("section", { class: "ask is-waiting", "aria-label": "Answer", "aria-busy": "true" },
+      h("div", { class: "ask-wait", "aria-hidden": "true" }, h("span"), h("span"), h("span")),
+      text, cited);
+
+    function show(raw, final) {
+      let s = raw.replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim();
+      if (!final) s = s.replace(/\s*\[[\d,\s]*$/, ""); // a citation still being written
+      const used = [];
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const m of s.matchAll(/\s*\[(\d+(?:\s*,\s*\d+)*)\]/g)) {
+        // The citations keep to the line of the word they follow.
+        const before = s.slice(at, m.index);
+        const word = /\S+$/.exec(before);
+        frag.append(word ? before.slice(0, word.index) : before);
+        const group = h("span", { class: "cites" }, word ? word[0] : "");
+        for (const n of m[1].split(",").map(Number)) {
+          const src = sources[n - 1];
+          if (!src) continue;
+          if (!used.includes(n)) used.push(n);
+          group.append(h("a", { class: "cite", href: src.url, rel: "noreferrer noopener", "aria-label": `${n}, ${hostOf(src.url)}`, text: String(n) }));
+        }
+        frag.append(group);
+        at = m.index + m[0].length;
+      }
+      frag.append(s.slice(at));
+      text.replaceChildren(frag);
+      if (final) {
+        cited.replaceChildren(...used.sort((a, b) => a - b).map((n) => h("a", { class: "chip", href: sources[n - 1].url, rel: "noreferrer noopener" },
+          h("span", { class: "ask-n", text: String(n) }), favicon(sources[n - 1].url), hostOf(sources[n - 1].url))));
+      }
+    }
+
+    (async () => {
+      let raw = "";
+      try {
+        const res = await fetch("/answer", {
+          method: "POST", signal,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ q, results: sources }),
+        });
+        if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+        const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          raw += value;
+          if (!raw.trim()) continue;
+          card.classList.remove("is-waiting");
+          show(raw, false);
+        }
+        if (!raw.trim()) throw new Error("no answer");
+        show(raw, true);
+        card.removeAttribute("aria-busy");
+      } catch {
+        card.remove();
+      }
+      if (!signal.aborted) layoutCloud();
+    })();
+    return card;
+  }
+
   function siteLine(r, extra) {
     const url = safeUrl(r.url);
     return h("div", { class: "r-site" },
@@ -942,6 +1052,7 @@
     typed = input.value;
     clearBtn.hidden = !input.value;
     fetchSuggest();
+    if (state.cat === "general" && askIntent(input.value.trim())) warmAnswers();
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); moveSuggest(1); }

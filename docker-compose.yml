@@ -7,10 +7,14 @@ services:
     user: "977:977"
     # No published port: only the avogadro container talks to it.
     env_file: .env
+    # Answers stream for a few seconds each; leave threads for searches meanwhile.
+    environment:
+      GRANIAN_BLOCKING_THREADS: "8"
     volumes:
       - ./config/settings.yml:/etc/searxng/settings.yml:ro
       - ./plugins/avogadro.py:/usr/local/searxng/searx/plugins/avogadro.py:ro
       - ./plugins/avogadro_stock.py:/usr/local/searxng/searx/plugins/avogadro_stock.py:ro
+      - ./plugins/avogadro_answer.py:/usr/local/searxng/searx/plugins/avogadro_answer.py:ro
       - searxng_cache:/var/cache/searxng
 
   # The Avogadro page, plus the few SearXNG routes it uses.
@@ -29,5 +33,42 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./frontend:/srv:ro
 
+  # Optional: a model for answers on this machine (README, "Answers"). Needs an NVIDIA GPU and
+  # the NVIDIA Container Toolkit. Set OLLAMA_URL=http://ollama:11434 in .env, then
+  # `docker compose --profile answers up -d`.
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    profiles: [answers]
+    environment:
+      # A prompt is about 1,500 tokens and an answer under 300, so 4K is plenty and keeps the cache small.
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      # One request at a time: an answer gets the whole GPU instead of sharing it.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Downloads OLLAMA_MODEL into the ollama service once it is up, then exits.
+  ollama-pull:
+    image: docker.io/ollama/ollama:latest
+    profiles: [answers]
+    depends_on:
+      - ollama
+    env_file: .env
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["/bin/sh", "-c", "until ollama list > /dev/null 2>&1; do sleep 1; done; exec ollama pull \"$${OLLAMA_MODEL:-gemma4:26b-a4b-it-qat}\""]
+    restart: "no"
+
 volumes:
   searxng_cache:
+  ollama_models:

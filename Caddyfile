@@ -7,7 +7,9 @@
 # Avogadro on :8080. The page may only load from this origin (the CSP), and links
 # never pass the search on as a referrer.
 :8080 {
-	encode zstd gzip
+	# Answers stream word by word; compressing them would hold the words back.
+	@compress not path /answer
+	encode @compress zstd gzip
 
 	header {
 		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -18,9 +20,16 @@
 	}
 
 	# SearXNG: suggestions, the image proxy, favicons and stock quotes.
-	@api path /autocompleter /image /favicon/* /stock
+	@api path /autocompleter /image /favicon/* /stock /answer/warm
 	handle @api {
 		reverse_proxy searxng:8080
+	}
+
+	# SearXNG: answers to questions, passed on as they are written.
+	handle /answer {
+		reverse_proxy searxng:8080 {
+			flush_interval -1
+		}
 	}
 
 	# SearXNG: JSON search.

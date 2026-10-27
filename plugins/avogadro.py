@@ -22,6 +22,9 @@ answers from SearXNG's favicon resolver cache.
 
 Stocks. ``/stock`` serves a quote and price series for the page's stock card and
 for other clients; see ``avogadro_stock``.
+
+Answers. ``/answer`` writes a short, cited answer to a question from the top
+results' pages with a local model; see ``avogadro_answer``.
 """
 
 import logging
@@ -36,7 +39,7 @@ from searx import settings
 from searx.favicons.proxy import search_favicon
 from searx.webutils import new_hmac
 
-from . import Plugin, PluginInfo, avogadro_stock
+from . import Plugin, PluginInfo, avogadro_answer, avogadro_stock
 
 if t.TYPE_CHECKING:
     from searx.extended_types import SXNG_Request
@@ -273,13 +276,15 @@ class SXNGPlugin(Plugin):
         self.info = PluginInfo(
             id=self.id,
             name="Avogadro",
-            description="Merge copies of the same page, serve result images and favicons through this instance, and serve stock quotes",
+            description="Merge copies of the same page, serve result images and favicons through this instance, serve stock quotes, and answer questions from the results",
             preference_section="privacy",
         )
 
     def init(self, app: "flask.Flask") -> bool:
         app.add_url_rule("/favicon/<host>", endpoint="avogadro_favicon", view_func=favicon)
         app.add_url_rule("/stock", endpoint="avogadro_stock", view_func=avogadro_stock.view)
+        app.add_url_rule("/answer", endpoint="avogadro_answer", view_func=avogadro_answer.view, methods=["POST"])
+        app.add_url_rule("/answer/warm", endpoint="avogadro_answer_warm", view_func=avogadro_answer.warm, methods=["POST"])
         return True
 
     def pre_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> bool:

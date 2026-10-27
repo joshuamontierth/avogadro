@@ -8,6 +8,7 @@ Avogadro replaces SearXNG's stock search page with a clean, quiet one. Behind it
 
 - **Results:** All, Images, News, Videos, IT and Science tabs, a time filter, Wikipedia infoboxes, instant answers, "did you mean" and related searches.
 - **Images:** a justified grid with a viewer you can step through with the arrow keys.
+- **Answers:** a question ("how tall is everest", "boiling point of water", "rust vs go") gets a short answer above the results, written by a local model from the top results' pages as you watch, each sentence citing its sources. Needs an [Ollama](https://ollama.com) server, which docker-compose.yml can run for you; without one, questions get plain results.
 - **Stocks:** a ticker search ("NVDA", "$spy", "nvidia stock") shows a quote card: price, change and after-hours price, a chart from one day to all time that you can scrub, and the day's figures.
 - **Keyboard:** `/` focuses the search box; `j` and `k` move through results, and `Enter` opens one.
 - **Autocomplete,** plus OpenSearch, so browsers can offer it as a search engine.
@@ -22,15 +23,17 @@ The page only ever talks to your own server:
 - Result images go through SearXNG's own image proxy.
 - Favicons come from SearXNG's cache.
 - Stock quotes are fetched by your server, from CNBC, never by the browser.
+- For an answer, your server fetches the top results' pages itself and sends them, with the question, to the Ollama server you configure. Only pages on the public internet are fetched.
 - The font is self-hosted.
 - Links don't send your search to the sites you open (`Referrer-Policy: no-referrer`).
 
 ## How it works
 
-Avogadro uses two containers:
+Avogadro uses two containers, plus a third for answers if you want the model on the same machine:
 
-- **`searxng`:** the stock SearXNG image, with no published port. It loads `config/settings.yml` and the small `plugins/avogadro.py` plugin. The plugin signs result images for SearXNG's `/image` proxy, adds a `/favicon/<host>` route, and serves quotes at `/stock` (`plugins/avogadro_stock.py`).
-- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only five routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image`, `/favicon/*` and `/stock`.
+- **`searxng`:** the stock SearXNG image, with no published port. It loads `config/settings.yml` and the small `plugins/avogadro.py` plugin. The plugin signs result images for SearXNG's `/image` proxy, adds a `/favicon/<host>` route, serves quotes at `/stock` (`plugins/avogadro_stock.py`) and answers at `/answer` (`plugins/avogadro_answer.py`).
+- **`ollama`** (optional, the `answers` profile): the model that writes [answers](#answers), plus a one-off `ollama-pull` that downloads it.
+- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only these routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image`, `/favicon/*`, `/stock`, `/answer` and `/answer/warm`.
 
 The atom is drawn in `frontend/cloud.js`. Each dot is a sample from the orbital's probability density |ψ|². The two colours are the two signs of the wavefunction.
 
@@ -62,6 +65,42 @@ GET /stock?symbol=NVDA&range=1D        range: 1D 5D 1M 6M YTD 1Y 5Y MAX (default
 
 Quotes are cached for a minute. Series are cached for a minute (1D) up to an hour (long ranges).
 
+### Answers
+
+The page asks for an answer only when the search reads as a question: it starts with who, what, how, is, can and the like, ends in "?", compares ("vs", "difference between"), or asks for a fact ("population", "boiling point", "half-life"). It sends the question and its top five results:
+
+```
+POST /answer   {"q": "how tall is everest", "results": [{"url": "...", "title": "...", "content": "..."}, ...]}
+```
+
+The reply is plain text, streamed as it is written: one to three sentences ending in citations like `[1]` or `[2][3]`, numbered in the order the results were sent. An empty reply means the results don't answer the question. 503 means no model is set up or it can't be reached.
+
+To be quick, the server:
+
+- fetches the result pages in parallel and gives up on slow ones after a second, when their snippets stand in for them;
+- sends the model only the passages that share the question's words, plus each page's opening, about 1,400 tokens in all;
+- clears the model's cache of the last long prompt while the pages download;
+- loads the model while a question is still being typed (`POST /answer/warm`).
+
+#### Setting up the model
+
+Answers need an [Ollama](https://ollama.com) server with an instruction model. `gemma4:26b-a4b-it-qat`, the default, is the one these numbers come from. It needs about 15 GB of GPU memory, and on a 20 GB RTX A4500 the first words show 1 to 1.5 seconds after the results. A smaller model fits a smaller GPU and answers sooner, but less carefully.
+
+To run it on the same machine (an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+
+1. In `.env`, set `OLLAMA_URL=http://ollama:11434` and, if you like, another `OLLAMA_MODEL`.
+2. Start everything with the `answers` profile:
+
+   ```sh
+   docker compose --profile answers up -d
+   ```
+
+   The first start downloads the model, which takes a while; answers begin once it is in. The `ollama` service keeps prompts within 4K tokens of context, runs one request at a time so each answer gets the whole GPU, and keeps the model loaded for 30 minutes after the last question.
+
+To use an Ollama server elsewhere, set `OLLAMA_URL` to it instead and leave the profile off. Its context length should be at least 4K, and Avogadro sends no load options, so it never makes the server reload a model another program is using.
+
+If a batch job shares the model, set `ANSWER_HOLD_URL` to an endpoint of that job. It is sent `{"seconds": 15}` when an answer starts and `{"seconds": 0}` when it ends, so the job can step aside.
+
 ## Setup
 
 1. Create `.env` from the example and fill it in:
@@ -71,7 +110,7 @@ Quotes are cached for a minute. Series are cached for a minute (1D) up to an hou
    openssl rand -hex 32   # paste as SEARXNG_SECRET
    ```
 
-   Set `SEARXNG_BASE_URL` to the address you'll reach the page at, and optionally `AVOGADRO_PORT`.
+   Set `SEARXNG_BASE_URL` to the address you'll reach the page at, and optionally `AVOGADRO_PORT` and the [answer](#answers) settings.
 
 2. Start it:
 
@@ -101,12 +140,14 @@ docker compose restart
 
 ```
 config/settings.yml    SearXNG overrides (engines, plugin, favicon resolver)
-plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>
+plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>; loads the two below
+plugins/avogadro_stock.py   /stock: quotes and price series
+plugins/avogadro_answer.py  /answer: cited answers to questions from a local model
 frontend/              the page: index.html, app.css, app.js, cloud.js, fonts
 android/               the Android app (Kotlin, Compose); build.sh builds and installs it
 logo/                  the mark: orbital.html draws it, render.sh writes the web and Android icons
 Caddyfile              static files, the SearXNG routes, security headers
-docker-compose.yml     the two containers
+docker-compose.yml     the two containers, plus an optional Ollama for answers
 LICENSE                AGPL-3.0
 ```
 
