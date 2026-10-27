@@ -2,6 +2,7 @@ package net.montierth.avogadro.data
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import net.montierth.avogadro.BuildConfig
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -62,6 +64,43 @@ data class SearchPage(
     val failed: List<String>,
 )
 
+/** One `[time, close]` pair of a chart; time in unix seconds. */
+data class Point(val t: Long, val v: Double)
+
+/** A pre-market or after-hours price. */
+data class Extended(val state: String?, val price: Double, val change: Double?, val changePct: Double?)
+
+data class StockStats(
+    val open: Double?,
+    val high: Double?,
+    val low: Double?,
+    val mktCap: String?,
+    val pe: Double?,
+    val divYield: Double?,
+    val wk52High: Double?,
+    val wk52Low: Double?,
+)
+
+/** The instance's /stock: a quote and the chart for one range (README, "The stock API"). */
+data class Quote(
+    val symbol: String,
+    val name: String,
+    val exchange: String?,
+    val currency: String?,
+    val price: Double,
+    val change: Double?,
+    val changePct: Double?,
+    val prevClose: Double?,
+    val state: String?,
+    val asOf: Long?,
+    val extended: Extended?,
+    val range: String,
+    /** The 1D chart's time span, so a day in progress draws partway; null for other ranges. */
+    val session: Pair<Long, Long>?,
+    val points: List<Point>,
+    val stats: StockStats,
+)
+
 /** SearXNG's JSON API, through the Avogadro instance. Every field an engine sends is optional. */
 class Api(private val client: OkHttpClient = defaultClient()) {
 
@@ -87,6 +126,23 @@ class Api(private val client: OkHttpClient = defaultClient()) {
             if (!response.isSuccessful) return@use emptyList()
             val root = Json.parseToJsonElement(response.body.string())
             (root as? JsonArray)?.getOrNull(1)?.strings()?.take(7) ?: emptyList()
+        }
+    }
+
+    /** A quote and its chart for [range] (1D 5D 1M 6M YTD 1Y 5Y MAX), or null when there is none. */
+    suspend fun stock(symbol: String, range: String): Quote? = withContext(Dispatchers.IO) {
+        val url = "$BASE_URL/stock".toHttpUrl().newBuilder()
+            .addQueryParameter("symbol", symbol)
+            .addQueryParameter("range", range)
+            .build()
+        try {
+            client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                if (!response.isSuccessful) null else parseQuote(response.body.string())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null // unreachable, or not the JSON it should be: no card
         }
     }
 
@@ -176,6 +232,57 @@ private fun JsonObject.toInfobox(): Infobox? {
         if (Regex("^P\\d+$").matches(name)) null else name to url
     }.take(5)
     return Infobox(title, str("content") ?: "", str("img_src"), attributes, links)
+}
+
+private fun JsonElement?.num(): Double? = (this as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
+
+private fun JsonObject.num(key: String): Double? = this[key].num()
+
+internal fun parseQuote(text: String): Quote? {
+    val root = Json.parseToJsonElement(text) as? JsonObject ?: return null
+    val price = root.num("price") ?: return null
+    val points = (root["points"] as? JsonArray ?: return null).mapNotNull { el ->
+        val pair = el as? JsonArray ?: return@mapNotNull null
+        val t = pair.getOrNull(0).num() ?: return@mapNotNull null
+        val v = pair.getOrNull(1).num() ?: return@mapNotNull null
+        Point(t.toLong(), v)
+    }
+    val symbol = root.str("symbol") ?: return null
+    val session = (root["session"] as? JsonArray)?.let { s ->
+        val a = s.getOrNull(0).num()?.toLong()
+        val b = s.getOrNull(1).num()?.toLong()
+        if (a != null && b != null && b > a) a to b else null
+    }
+    val extended = (root["extended"] as? JsonObject)?.let { e ->
+        e.num("price")?.let { Extended(e.str("state"), it, e.num("change"), e.num("change_pct")) }
+    }
+    val st = root["stats"] as? JsonObject ?: JsonObject(emptyMap())
+    return Quote(
+        symbol = symbol,
+        name = root.str("name") ?: symbol,
+        exchange = root.str("exchange"),
+        currency = root.str("currency"),
+        price = price,
+        change = root.num("change"),
+        changePct = root.num("change_pct"),
+        prevClose = root.num("prev_close"),
+        state = root.str("state"),
+        asOf = root.num("as_of")?.toLong(),
+        extended = extended,
+        range = root.str("range") ?: "1D",
+        session = session,
+        points = points,
+        stats = StockStats(
+            open = st.num("open"),
+            high = st.num("high"),
+            low = st.num("low"),
+            mktCap = st.str("mkt_cap"),
+            pe = st.num("pe"),
+            divYield = st.num("div_yield"),
+            wk52High = st.num("wk52_high"),
+            wk52Low = st.num("wk52_low"),
+        ),
+    )
 }
 
 private fun JsonArray?.orEmpty(): List<JsonElement> = this ?: emptyList()

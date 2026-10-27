@@ -11,14 +11,19 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.montierth.avogadro.data.Answer
 import net.montierth.avogadro.data.Api
 import net.montierth.avogadro.data.Hit
 import net.montierth.avogadro.data.Infobox
+import net.montierth.avogadro.data.Quote
+import net.montierth.avogadro.data.Tickers
 
 enum class Screen { Home, Results }
 
@@ -31,6 +36,18 @@ val TIMES = listOf(
     "" to "Any time", "day" to "Past day", "week" to "Past week",
     "month" to "Past month", "year" to "Past year",
 )
+
+val RANGES = listOf("1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX")
+
+/** The quote card: the range picked, the range on show (the two differ while a range loads),
+ *  and every range fetched so far. It is made from the 1D quote. */
+data class StockCard(val range: String, val shown: String, val data: Map<String, Quote>) {
+    constructor(quote: Quote) : this("1D", "1D", mapOf("1D" to quote))
+
+    val base: Quote get() = data.getValue("1D")
+    val quote: Quote get() = data.getValue(shown)
+    val loading: Boolean get() = range != shown
+}
 
 data class Results(
     val query: String = "",
@@ -45,6 +62,7 @@ data class Results(
     val answers: List<Answer> = emptyList(),
     val correction: String? = null,
     val infobox: Infobox? = null,
+    val stock: StockCard? = null,
     val related: List<String> = emptyList(),
     val failed: List<String> = emptyList(),
     val canLoadMore: Boolean = false,
@@ -94,25 +112,66 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         screen = Screen.Results
         searchJob?.cancel()
         results = Results(query = q, category = category, time = time, loading = true, generation = results.generation + 1)
+        // A query that names a ticker starts its quote alongside the search.
+        val intent = if (category == "general") Tickers.intent(q) else null
+        val guess = Tickers.guess(intent)
+        val generation = results.generation
         searchJob = viewModelScope.launch {
+            val early = guess?.let { async { api.stock(it, "1D") } }
             try {
                 val page = api.search(q, category, 1, time)
                 val hits = page.hits.distinctBy { it.url }
+                // Results confirm or find the ticker. The card gets a moment to arrive so the
+                // results don't jump down under it; if it is slower, it is put in place when it comes.
+                val symbol = Tickers.symbol(intent, page.hits)
+                if (symbol != guess) early?.cancel()
+                val pending: Deferred<Quote?>? = symbol?.let { if (it == guess) early else async { api.stock(it, "1D") } }
+                val stock = pending?.let { withTimeoutOrNull(1200) { it.await() } }
                 results = results.copy(
                     loading = false,
                     hits = hits,
                     answers = page.answers,
                     correction = page.correction?.takeIf { !it.equals(q, ignoreCase = true) },
                     infobox = if (category == "general") page.infobox else null,
+                    stock = stock?.let(::StockCard),
                     related = page.related.filter { !it.equals(q, ignoreCase = true) }.take(8),
                     failed = page.failed,
                     canLoadMore = hits.size >= 6,
                 )
+                if (stock == null && pending != null && !pending.isCompleted) {
+                    val late = pending.await()
+                    if (late != null && results.generation == generation) results = results.copy(stock = StockCard(late))
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                early?.cancel()
                 results = results.copy(loading = false, error = true)
             }
+        }
+    }
+
+    /** Shows the card's chart for [range], fetching it the first time. A range that fails to load
+     *  leaves the card as it was; one that arrives after another was picked is only kept. */
+    fun setStockRange(range: String) {
+        val card = results.stock ?: return
+        if (range == card.range) return
+        if (range in card.data) {
+            results = results.copy(stock = card.copy(range = range, shown = range))
+            return
+        }
+        results = results.copy(stock = card.copy(range = range))
+        val generation = results.generation
+        viewModelScope.launch {
+            val quote = api.stock(card.base.symbol, range)
+            val now = results.stock?.takeIf { results.generation == generation } ?: return@launch
+            results = results.copy(
+                stock = when {
+                    quote == null -> if (now.range == range) now.copy(range = now.shown) else now
+                    now.range == range -> now.copy(shown = range, data = now.data + (range to quote))
+                    else -> now.copy(data = now.data + (range to quote))
+                },
+            )
         }
     }
 

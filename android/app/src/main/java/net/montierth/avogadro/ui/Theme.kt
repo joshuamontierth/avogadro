@@ -36,6 +36,9 @@ data class Palette(
     val led: Color,
     val amber: Color,
     val shadow: Color,
+    /** A price's direction in the stock card, nothing else. */
+    val gain: Color,
+    val loss: Color,
     /** The electron cloud's inks: positive and negative phase. */
     val inkPlus: Color,
     val inkMinus: Color,
@@ -50,6 +53,7 @@ private val Dark = Palette(
     visited = Color(0xFFA7B6D3),
     seam = Color(0xFFE6EDF6).copy(alpha = 0.08f), seam2 = Color(0xFFE6EDF6).copy(alpha = 0.15f),
     led = Color(0xFF8CCAFF), amber = Color(0xFFF0B45E), shadow = Color.Black.copy(alpha = 0.55f),
+    gain = Color(0xFF6AD6A1), loss = Color(0xFFF2877D),
     inkPlus = Color(0xFFE2EAF6), inkMinus = Color(0xFF8CCAFF),
     dotAlpha = floatArrayOf(0.8f, 0.55f, 0.32f),
 )
@@ -61,6 +65,7 @@ private val Day = Palette(
     visited = Color(0xFF4A5888),
     seam = Color(0xFF0D1520).copy(alpha = 0.10f), seam2 = Color(0xFF0D1520).copy(alpha = 0.18f),
     led = Color(0xFF0A61C0), amber = Color(0xFF9A5A06), shadow = Color(0xFF0D1520).copy(alpha = 0.18f),
+    gain = Color(0xFF0F7A4A), loss = Color(0xFFBF3A2D),
     inkPlus = Color(0xFF141C28), inkMinus = Color(0xFF0A61C0),
     dotAlpha = floatArrayOf(0.5f, 0.36f, 0.22f),
 )

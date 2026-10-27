@@ -71,6 +71,7 @@ private fun ResultList(vm: SearchViewModel, bottomInset: androidx.compose.ui.uni
         modifier = Modifier.fillMaxSize(),
     ) {
         item("filters") { FilterRow(vm) }
+        r.stock?.let { card -> item("stock") { StockCardView(card, vm::setStockRange) } }
         r.answers.forEachIndexed { i, a ->
             item("answer-$i") {
                 Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 18.dp).drawBehind { seamBelow(p.seam) }) {
@@ -99,7 +100,7 @@ private fun ResultList(vm: SearchViewModel, bottomInset: androidx.compose.ui.uni
                     "Couldn't reach Avogadro. Check that Tailscale is connected, then try again.",
                 ) { PrimaryButton("Try again", vm::retry) }
             }
-            !r.loading && r.hits.isEmpty() && r.answers.isEmpty() && r.infobox == null -> item("empty") {
+            !r.loading && r.hits.isEmpty() && r.answers.isEmpty() && r.infobox == null && r.stock == null -> item("empty") {
                 Message("No results for “${r.query}”", null) { if (r.related.isNotEmpty()) Chips(r.related.take(6), { vm.search(it) }) }
             }
         }
@@ -151,7 +152,7 @@ private fun Message(title: String, body: String?, action: @Composable () -> Unit
     }
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.seamBelow(color: androidx.compose.ui.graphics.Color) {
+fun androidx.compose.ui.graphics.drawscope.DrawScope.seamBelow(color: androidx.compose.ui.graphics.Color) {
     drawLine(color, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 1.dp.toPx())
 }
 
