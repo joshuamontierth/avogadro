@@ -15,7 +15,9 @@ answers with one JSON shape, shared by the page and other clients, so keep it st
 Times are unix seconds and percentages plain numbers (0.46 means 0.46%). Stats a
 security doesn't have are null. Points ascend, number at most ``MAX_POINTS``, and for
 1D and 5D cover only the regular session; pre- and after-hours prices are in
-``extended``. ``session`` is the 1D chart's time domain (null for other ranges).
+``extended``. Before the open (``state`` "pre") the day hasn't started, so ``change``
+and ``change_pct`` are 0 and ``prev_close`` is the last close, which ``price`` still
+shows. ``session`` is the 1D chart's time domain (null for other ranges).
 Errors: 400 for a bad symbol or range, 404 for an unknown symbol, 502 when the
 source fails, each as ``{"error": ...}``.
 
@@ -205,7 +207,7 @@ def shape_series(symbol: str, rng: str, quote: dict) -> tuple[list, list | None]
             if rng == "1D" and rows:
                 session = day_session(rows[0])
                 # A finished day ends on its closing price, as the quote shows it.
-                if state in ("post", "closed") and rows[-1][0] < session[1] and price is not None:
+                if state in ("pre", "post", "closed") and rows[-1][0] < session[1] and price is not None:
                     rows.append((session[1], rows[-1][1][:8] + "160000", price))
         elif rng == "1D" and rows:
             session = [rows[0][0], rows[-1][0]]
@@ -248,6 +250,11 @@ def shape(symbol: str, rng: str) -> dict:
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as e:
         log.warning("no %s series for %s: %s", rng, symbol, e)
         points, session = [], None
+    change, change_pct = number(row.get("change")), number(row.get("change_pct"))
+    prev_close = number(row.get("previous_day_closing"))
+    if state == "pre" and price is not None:
+        # Before the open the day hasn't moved: price is still the last close.
+        change, change_pct, prev_close = 0.0, 0.0, price
     volume = number(row.get("volume"))
     return {
         "symbol": row.get("symbol") or symbol,
@@ -255,9 +262,9 @@ def shape(symbol: str, rng: str) -> dict:
         "exchange": row.get("exchange"),
         "currency": row.get("currencyCode"),
         "price": price,
-        "change": number(row.get("change")),
-        "change_pct": number(row.get("change_pct")),
-        "prev_close": number(row.get("previous_day_closing")),
+        "change": change,
+        "change_pct": change_pct,
+        "prev_close": prev_close,
         "state": state,
         "as_of": stamp(row.get("last_time")),
         "extended": extended,

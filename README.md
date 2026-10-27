@@ -58,6 +58,7 @@ GET /stock?symbol=NVDA&range=1D        range: 1D 5D 1M 6M YTD 1Y 5Y MAX (default
 
 - **Times** are unix seconds. Percentages are plain numbers: `0.46` means 0.46%.
 - **`state`** is `open`, `pre`, `post` or `closed`. `extended` holds the pre-market or after-hours price, or is `null`.
+- **Before the open** (`pre`), the day hasn't started: `change` and `change_pct` are 0, and `prev_close` is the last close, which `price` still shows. The pre-market move is in `extended`.
 - **`points`** are `[time, close]` pairs in ascending order, at most 400 of them. 1D and 5D cover only the regular session.
 - **`session`** is the 1D chart's time span, so a day in progress draws only partway. It is `null` for other ranges.
 - **Stats** a security doesn't have are `null`.
