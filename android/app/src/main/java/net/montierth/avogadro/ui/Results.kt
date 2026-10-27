@@ -72,6 +72,7 @@ private fun ResultList(vm: SearchViewModel, bottomInset: androidx.compose.ui.uni
     ) {
         item("filters") { FilterRow(vm) }
         r.stock?.let { card -> item("stock") { StockCardView(card, vm::setStockRange) } }
+        r.ask?.let { card -> item("ask") { AnswerCardView(card, open) } }
         r.answers.forEachIndexed { i, a ->
             item("answer-$i") {
                 Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 18.dp).drawBehind { seamBelow(p.seam) }) {
@@ -157,18 +158,18 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.seamBelow(color: androidx.c
 }
 
 @Composable
-private fun Favicon(url: String) {
+internal fun Favicon(url: String, size: Int = 18) {
     val p = LocalPalette.current
     var failed by remember(url) { mutableStateOf(false) }
     val model = Format.favicon(url)
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier.size(18.dp).clip(RoundedCornerShape(5.dp)).background(p.felt3),
+        modifier = Modifier.size(size.dp).clip(RoundedCornerShape((if (size >= 18) 5 else 4).dp)).background(p.felt3),
     ) {
         if (model == null || failed) {
-            Text(Format.host(url).take(1).uppercase(), style = type(10.5.sp, 650, p.vapor2))
+            Text(Format.host(url).take(1).uppercase(), style = type((size * 0.58f).sp, 650, p.vapor2))
         } else {
-            AsyncImage(model, null, modifier = Modifier.size(16.dp), onError = { failed = true })
+            AsyncImage(model, null, modifier = Modifier.size((size - 2).dp), onError = { failed = true })
         }
     }
 }

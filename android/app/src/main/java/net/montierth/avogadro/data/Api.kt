@@ -1,9 +1,15 @@
 package net.montierth.avogadro.data
 
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -12,11 +18,17 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.addJsonObject
 import net.montierth.avogadro.BuildConfig
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /** The Avogadro instance this build talks to (from avogadro.properties at build time). */
 const val BASE_URL: String = BuildConfig.BASE_URL
@@ -146,7 +158,50 @@ class Api(private val client: OkHttpClient = defaultClient()) {
         }
     }
 
+    /** The instance's written answer to [q] from [sources] (README, "Answers"), as the whole text so
+     *  far each time more of it arrives. It ends empty when the results don't answer the question,
+     *  and throws when the instance has no model or can't be reached. */
+    fun answer(q: String, sources: List<Source>): Flow<String> = flow {
+        val body = buildJsonObject {
+            put("q", q)
+            putJsonArray("results") {
+                sources.forEach { s -> addJsonObject { put("url", s.url); put("title", s.title); put("content", s.content) } }
+            }
+        }.toString().toRequestBody(JSON)
+        val call = client.newCall(Request.Builder().url("$BASE_URL/answer").post(body).build())
+        // A new search cancels this collector; closing the call stops a read that is waiting on the model.
+        val stop = currentCoroutineContext().job.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                val source = response.body.source()
+                val bytes = ByteArrayOutputStream()
+                val chunk = ByteArray(4096)
+                while (true) {
+                    val n = source.read(chunk)
+                    if (n < 0) break
+                    bytes.write(chunk, 0, n)
+                    // A character split across reads decodes as U+FFFD until the rest of it comes.
+                    emit(bytes.toString(Charsets.UTF_8.name()).trimEnd('\uFFFD'))
+                }
+                emit(bytes.toString(Charsets.UTF_8.name()))
+            }
+        } finally {
+            stop.dispose()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /** Wakes the instance's model ahead of a question; nothing comes back. */
+    suspend fun warm() = withContext(Dispatchers.IO) {
+        runCatching {
+            client.newCall(Request.Builder().url("$BASE_URL/answer/warm").post(ByteArray(0).toRequestBody()).build()).execute().close()
+        }
+        Unit
+    }
+
     companion object {
+        private val JSON = "application/json".toMediaType()
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)

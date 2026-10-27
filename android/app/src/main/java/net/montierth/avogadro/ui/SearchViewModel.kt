@@ -20,9 +20,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.montierth.avogadro.data.Answer
 import net.montierth.avogadro.data.Api
+import net.montierth.avogadro.data.Ask
 import net.montierth.avogadro.data.Hit
 import net.montierth.avogadro.data.Infobox
 import net.montierth.avogadro.data.Quote
+import net.montierth.avogadro.data.Source
 import net.montierth.avogadro.data.Tickers
 
 enum class Screen { Home, Results }
@@ -49,6 +51,9 @@ data class StockCard(val range: String, val shown: String, val data: Map<String,
     val loading: Boolean get() = range != shown
 }
 
+/** A written answer: waiting while [text] is empty, then the text so far, [done] once complete. */
+data class AskCard(val sources: List<Source>, val text: String = "", val done: Boolean = false)
+
 data class Results(
     val query: String = "",
     val category: String = "general",
@@ -63,6 +68,7 @@ data class Results(
     val correction: String? = null,
     val infobox: Infobox? = null,
     val stock: StockCard? = null,
+    val ask: AskCard? = null,
     val related: List<String> = emptyList(),
     val failed: List<String> = emptyList(),
     val canLoadMore: Boolean = false,
@@ -92,6 +98,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
     private var suggestJob: Job? = null
+    private var warmedAt = 0L
 
     fun requestFocus() {
         focusRequests++
@@ -101,6 +108,15 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val changed = value.text != text.text
         text = value
         if (changed) suggestFor(value.text)
+        if (changed && results.category == "general" && Ask.intent(value.text.trim())) warm()
+    }
+
+    /** Typing a question wakes the model, so it is ready by the time the results are. */
+    private fun warm() {
+        val now = System.currentTimeMillis()
+        if (now - warmedAt < 60_000) return
+        warmedAt = now
+        viewModelScope.launch { api.warm() }
     }
 
     fun search(query: String, category: String = results.category, time: String = results.time) {
@@ -115,6 +131,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         // A query that names a ticker starts its quote alongside the search.
         val intent = if (category == "general") Tickers.intent(q) else null
         val guess = Tickers.guess(intent)
+        val ask = category == "general" && Ask.intent(q)
+        if (ask) warm()
         val generation = results.generation
         searchJob = viewModelScope.launch {
             val early = guess?.let { async { api.stock(it, "1D") } }
@@ -127,6 +145,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 if (symbol != guess) early?.cancel()
                 val pending: Deferred<Quote?>? = symbol?.let { if (it == guess) early else async { api.stock(it, "1D") } }
                 val stock = pending?.let { withTimeoutOrNull(1200) { it.await() } }
+                // SearXNG's own instant answers (sums, conversions) need no model.
+                val sources = if (ask && page.answers.isEmpty()) Ask.sources(hits, Format::plain) else emptyList()
                 results = results.copy(
                     loading = false,
                     hits = hits,
@@ -134,10 +154,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                     correction = page.correction?.takeIf { !it.equals(q, ignoreCase = true) },
                     infobox = if (category == "general") page.infobox else null,
                     stock = stock?.let(::StockCard),
+                    ask = if (sources.size >= 2) AskCard(sources) else null,
                     related = page.related.filter { !it.equals(q, ignoreCase = true) }.take(8),
                     failed = page.failed,
                     canLoadMore = hits.size >= 6,
                 )
+                if (results.ask != null) launch { answer(q, sources, generation) }
                 if (stock == null && pending != null && !pending.isCompleted) {
                     val late = pending.await()
                     if (late != null && results.generation == generation) results = results.copy(stock = StockCard(late))
@@ -148,6 +170,26 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 early?.cancel()
                 results = results.copy(loading = false, error = true)
             }
+        }
+    }
+
+    /** Streams the answer into its card; the card goes away if the results don't answer the
+     *  question or the model can't be reached. */
+    private suspend fun answer(q: String, sources: List<Source>, generation: Int) {
+        fun update(card: AskCard?) {
+            if (results.generation == generation) results = results.copy(ask = card)
+        }
+        try {
+            var text = ""
+            api.answer(q, sources).collect { so ->
+                text = so
+                if (so.isNotBlank()) update(results.ask?.copy(text = so))
+            }
+            update(if (text.isBlank()) null else results.ask?.copy(text = text, done = true))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            update(null)
         }
     }
 
