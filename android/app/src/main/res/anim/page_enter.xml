@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A page slides in over the app like one of its own screens (see ui/Links.kt). -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="320"
+    android:fromXDelta="100%"
+    android:toXDelta="0%"
+    android:interpolator="@android:interpolator/fast_out_slow_in" />

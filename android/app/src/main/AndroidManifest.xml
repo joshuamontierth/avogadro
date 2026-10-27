@@ -2,8 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Self-update from the instance (data/Updater.kt). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application
+        android:name=".AvogadroApplication"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
@@ -24,6 +28,14 @@
         </activity>
 
         <receiver
+            android:name=".data.UpdateReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".ui.CopyLinkReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".widget.SearchWidget"
             android:exported="true"
             android:label="@string/widget_name">
@@ -39,6 +51,11 @@
     <queries>
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 </manifest>

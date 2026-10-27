@@ -1,6 +1,9 @@
 # SearXNG's secret key and this host's address live here; see .env.example.
 .env
 
+# The published Android app (android/build.sh publish).
+frontend/apk/
+
 # Agent and design-process files (Impeccable's product record, design system and working files).
 PRODUCT.md
 DESIGN.md

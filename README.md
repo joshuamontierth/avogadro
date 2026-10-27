@@ -14,6 +14,7 @@ Avogadro replaces SearXNG's stock search page with a clean, quiet one. Behind it
 - **Autocomplete,** plus OpenSearch, so browsers can offer it as a search engine.
 - **Light and dark** themes that follow your system, and a layout built for phones as well as desktops.
 - **Reduced motion:** with that setting on, the atom becomes a still picture.
+- **Android app:** a native client with the same atom, answers and stock card, and a home-screen search widget. Pages open in a Chrome Custom Tab dressed as part of the app, with share and "Copy link", and links an installed app owns open in that app. It updates itself from your instance.
 
 ## Privacy
 
@@ -130,6 +131,16 @@ If a batch job shares the model, set `ANSWER_HOLD_URL` to an endpoint of that jo
 4. To make it your browser's search engine, use `https://your-address/?q=%s`.
 
 To serve the same instance from several hosts, give every host the same `.env`; result image links are signed with `SEARXNG_SECRET`.
+
+### The Android app
+
+`android/build.sh` builds the signed release APK on a host with the Android SDK, over SSH, for the instance in `SEARXNG_BASE_URL`. `install` also installs it with adb, and `publish` puts it in `frontend/apk/` (and on each host in `AVOGADRO_MIRRORS`), where installed apps find it at `/apk/version.json`:
+
+```sh
+android/build.sh publish install
+```
+
+Bump `versionCode` in `android/app/build.gradle.kts` before publishing. The app checks for a new build when it comes to the front, downloads it, and checks its size, SHA-256, package, version and signing key before installing it. It installs on its own a few seconds after you leave the app, or straight away when you tap "Update" on the home screen. The first time, Android asks you to let Avogadro install apps.
 
 ## Configuration
 

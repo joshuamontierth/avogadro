@@ -1,6 +1,8 @@
 package net.montierth.avogadro.ui
 
 import android.app.Application
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -8,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlin.coroutines.cancellation.CancellationException
@@ -17,8 +20,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
+import net.montierth.avogadro.AvogadroApplication
 import net.montierth.avogadro.data.Answer
+import net.montierth.avogadro.data.AppUpdate
 import net.montierth.avogadro.data.Api
 import net.montierth.avogadro.data.Ask
 import net.montierth.avogadro.data.Hit
@@ -90,18 +96,66 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     /** Bumps on every search the user sends: the atom is excited into a new orbital. */
     var excitations by mutableIntStateOf(0)
         private set
-    /** Bumps when the home-screen widget asks for the search field. */
-    var focusRequests by mutableIntStateOf(0)
+    /** The home-screen widget asked for the search field; the screen answers it once (see [focusTaken]). */
+    var focusWanted by mutableStateOf(false)
         private set
 
     val visited = mutableStateMapOf<String, Boolean>()
+
+    private val updater = (app as AvogadroApplication).updater
+
+    /** A newer build from the instance, downloaded and verified: home offers "Update". */
+    val update: StateFlow<AppUpdate?> = updater.ready
+
+    /** A tapped update is downloading or installing. */
+    var updating by mutableStateOf(false)
+        private set
+    @Volatile private var installAfterGrant = false
+
+    /**
+     * "Update": install now. When Android first needs this app allowed to install apps, returns
+     * that settings screen; the install carries on when the user comes back.
+     */
+    fun installUpdate(): Intent? {
+        if (!updater.canInstall()) {
+            installAfterGrant = true
+            return Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${getApplication<Application>().packageName}".toUri())
+        }
+        startInstall()
+        return null
+    }
+
+    private fun startInstall() {
+        if (updating) return
+        updating = true
+        viewModelScope.launch {
+            try {
+                // A silent install closes the app; if Android asks first, give its dialog time.
+                if (updater.installNow()) delay(30_000)
+            } finally {
+                updating = false
+            }
+        }
+    }
+
+    /** Back from the "install unknown apps" switch: carry on with the update if it was allowed. */
+    fun onResumed() {
+        if (installAfterGrant && updater.canInstall()) {
+            installAfterGrant = false
+            startInstall()
+        }
+    }
 
     private var searchJob: Job? = null
     private var suggestJob: Job? = null
     private var warmedAt = 0L
 
     fun requestFocus() {
-        focusRequests++
+        focusWanted = true
+    }
+
+    fun focusTaken() {
+        focusWanted = false
     }
 
     fun edit(value: TextFieldValue) {
