@@ -473,10 +473,12 @@
   }
 
   const money = (v) => (v == null ? "–" : v.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: Math.abs(v) < 1 ? 4 : 2 }));
-  const signed = (v) => (v < 0 ? "−" : "+") + money(Math.abs(v));
+  // A move that prints as zero has no sign and no colour.
+  const flat = (v) => money(Math.abs(v)) === "0.00";
+  const signed = (v) => (flat(v) ? "" : v < 0 ? "−" : "+") + money(Math.abs(v));
   const percent = (v) => v.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const move = (change, pct) => `${signed(change)} (${percent(Math.abs(pct))}%)`;
-  const trend = (v) => (v > 0 ? "is-up" : v < 0 ? "is-down" : null);
+  const trend = (v) => (flat(v) ? null : v > 0 ? "is-up" : v < 0 ? "is-down" : null);
   // Exchange time: a US session reads 9:30 to 4 wherever the reader is.
   const et = (opts) => new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", ...opts });
   const etTime = et({ hour: "numeric", minute: "2-digit" });

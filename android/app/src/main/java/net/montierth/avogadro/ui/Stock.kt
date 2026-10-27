@@ -93,7 +93,9 @@ private fun figures(v: Double, min: Int, max: Int): String = NumberFormat.getNum
 }.format(v)
 
 private fun money(v: Double?): String = if (v == null) "–" else figures(v, 2, if (abs(v) < 1) 4 else 2)
-private fun signed(v: Double): String = (if (v < 0) "−" else "+") + money(abs(v))
+/** A move that prints as zero has no sign and no colour. */
+private fun flat(v: Double): Boolean = money(abs(v)) == money(0.0)
+private fun signed(v: Double): String = (if (flat(v)) "" else if (v < 0) "−" else "+") + money(abs(v))
 private fun percent(v: Double): String = figures(v, 2, 2)
 private fun move(change: Double, pct: Double): String = "${signed(change)} (${percent(abs(pct))}%)"
 
@@ -103,7 +105,7 @@ private fun TextStyle.tnum(): TextStyle = copy(fontFeatureSettings = "tnum")
 private fun trend(v: Double?): Color? {
     val p = LocalPalette.current
     return when {
-        v == null -> null
+        v == null || flat(v) -> null
         v > 0 -> p.gain
         v < 0 -> p.loss
         else -> null
