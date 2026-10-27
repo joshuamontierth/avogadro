@@ -17,10 +17,12 @@ How it stays quick and close to its sources:
   job sharing the model is asked to step aside;
 - each page is cut into passages and only those that share the question's terms (BM25),
   plus each page's lead, go to the model, about ``BUDGET`` characters in all;
-- the model is told to answer only from those sources and to say NONE otherwise.
+- the model is told to answer only from those sources and to say NONE otherwise, to give one
+  answer rather than each source's figure, and to name first how its sources relate (a line
+  that is not passed on); each source carries its page's date, so "most recent" can be judged.
 
 ``POST /answer/warm`` loads the model and clears its cache ahead of a question (the page
-calls it while one is being typed), at most once a minute. Answers are cached for an hour.
+calls it while one is being typed), at most once a minute. Answers are cached for an hour; an empty one is not.
 
 Settings come from the environment: ``OLLAMA_URL`` (unset turns answers off),
 ``OLLAMA_MODEL`` and ``ANSWER_HOLD_URL``, an optional URL that is sent
@@ -63,26 +65,48 @@ MAX_SOURCES = 5
 FETCH_SOON = 0.5           # seconds after which ENOUGH_PAGES pages will do
 ENOUGH_PAGES = 3
 FETCH_WAIT = 1.0           # seconds to wait for result pages before answering without the rest
+FETCH_FIRST = 2.0          # ... unless none has come: then this long for the first (a slow host)
 PAGE_TIMEOUT = 4
-MAX_PAGE = 2_000_000
+MAX_PAGE = 700_000         # bytes of HTML read from a page: the lead and first sections of even a long article
 BUDGET = 5500              # characters of source text for the model (~1,400 tokens)
 LEAD_CHARS = 450
 PASSAGE_CHARS = 650
 PER_SOURCE = 3             # ranked passages per page, beside its lead
 ANSWER_TTL = 3600
 
-SYSTEM = (
-    "You answer a web search question for the person who asked it, using only the numbered "
-    "sources. Today is {today}.\n"
-    "- Give the direct answer first, in one to three plain sentences (at most 70 words). Keep "
-    "figures, names, units and dates exactly as the sources state them.\n"
-    "- End every sentence with the numbers of the sources that support it, like [1] or [2][3].\n"
-    "- When sources give different figures, state the best-supported one (most recent, official or "
-    "encyclopedic); add a range in a few words only if they differ meaningfully. Never list each "
-    "source's figure. Never add facts the sources don't state.\n"
-    "- If the sources don't answer the question, reply with exactly NONE.\n"
-    "- No preamble, no markdown, no lists. Answer in the language of the question."
+# Tested on a fixed set of questions against gemma4:26b-a4b. Two things made the difference for a model this
+# size: a short reminder at the end of the user turn (rules far up the prompt are followed loosely), and
+# having the model first name how its sources relate, after Google Research's taxonomy of knowledge
+# conflicts in RAG ("DRAGged into Conflicts", 2025). Together they cut answers that list every source's
+# figure from a third to one in twenty, and shortened them. Worked examples made it worse: the model
+# copied their "sources disagree" into questions of fact.
+SYSTEM = """You answer a web search question from the numbered search results you are given, like the short answer at the top of a search page. Today is {today}.
+
+How to answer:
+- Lead with the answer itself. One to three plain sentences, at most 60 words in all. No preamble, no markdown, no lists.
+- Use only what the sources say, never your own knowledge. Keep names, figures, units and dates as the sources write them.
+- End every sentence with the numbers of the sources that support it, like [2] or [1][3], at most three per sentence.
+- If the sources don't answer the question, reply with exactly NONE.
+
+Give one answer, not a survey of the sources:
+- Figures that differ only by rounding, precision, unit conversion or measuring method are the same answer. Give the most precise or most recent one, once, citing every source that agrees with it.
+- When an older and a newer figure differ (a 2020 count and a 2025 estimate), give the newest with its year. Add the older one only if it is an official count, in a few words.
+- Facts that fit together (an average and a range, a total and a part) belong in one answer: combine them.
+- Ignore a source that is plainly wrong, outdated or off topic.
+- Never write "other sources say", "other sources list" or "some sources state", and never list alternative figures one by one.
+- Say that views differ only for opinions, predictions or unsettled research (is coffee healthy, which language is better), never for a fact that can be looked up or measured. Then give each side in a few words.
+
+Before the answer, write one line that says how the sources relate on this question:
+Kind: same (they agree, maybe at different precision), newer (older and newer figures), compatible (different facts that fit together), views (opinions or unsettled research), or none (they don't answer it).
+Then write the answer on the next line. After "Kind: none", write nothing more."""
+
+# Last in the user turn, where a model this size heeds it most.
+REMINDER = (
+    "Answer the question in one to three sentences. Give one answer: when the sources give slightly different "
+    "figures for the same thing, state only the best one (most precise, or most recent) and cite every source "
+    "that gives it. Don't mention the other figures or what \"other sources\" say."
 )
+KIND_LINE = re.compile(r"kind:([^\n]*)\n", re.I)
 
 pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="avogadro-answer")
 warmed = [0.0]
@@ -151,15 +175,23 @@ def fetch_page(url: str) -> bytes | None:
         kind = resp.headers.get_content_type()
         if kind not in ("text/html", "application/xhtml+xml"):
             return None
-        raw = resp.read(MAX_PAGE)
-        if resp.headers.get("Content-Encoding", "").lower() == "gzip":
-            raw = zlib.decompressobj(47).decompress(raw, MAX_PAGE * 4)
+        if resp.headers.get("Content-Encoding", "").lower() != "gzip":
+            return resp.read(MAX_PAGE)
+        unzip, raw = zlib.decompressobj(47), b""
+        while len(raw) < MAX_PAGE and (chunk := resp.read(65536)):
+            raw += unzip.decompress(chunk, MAX_PAGE - len(raw))
         return raw
 
 
-def read_page(url: str) -> list[str] | None:
+class Page(t.NamedTuple):
+    date: str | None       # when it was last updated or published, as YYYY-MM-DD
+    passages: list[str]
+
+
+def read_page(url: str) -> Page | None:
     raw = fetch_page(url)
-    return passages(raw) if raw else None
+    page = parse(raw) if raw else None
+    return page if page and page.passages else None
 
 
 # ---------- passages ----------
@@ -182,6 +214,11 @@ GROUPED = {"li", "tr", "dd", "dt"}
 MAIN = ("//main", "//*[@role='main']", "//*[@id='mw-content-text']", "//article")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 SPACE = re.compile(r"\s+")
+# Where pages say when they were updated, then when published (Open Graph, schema.org, Dublin Core).
+MODIFIED = {"article:modified_time", "og:updated_time", "datemodified", "last-modified"}
+PUBLISHED = {"article:published_time", "datepublished", "date", "dc.date", "dc.date.issued", "pubdate", "publish-date"}
+LD_DATE = re.compile(r'"date(Modified|Published)"\s*:\s*"(\d{4}-\d{2}-\d{2})')
+DAY = re.compile(r"\b((?:19|20)\d{2})-(\d{2})-(\d{2})")
 
 
 def furniture(el: t.Any) -> bool:
@@ -207,9 +244,29 @@ def split_long(text: str) -> list[str]:
     return [p[:PASSAGE_CHARS] for p in out]
 
 
-def passages(raw: bytes) -> list[str]:
-    """The page's readable text as passages, in reading order."""
+def page_date(doc: t.Any) -> str | None:
+    """The day a page was last updated, else published, from its metadata."""
+    found: dict[str, str] = {}
+    for m in doc.iter("meta"):
+        key = (m.get("property") or m.get("name") or m.get("itemprop") or "").lower()
+        day = DAY.search(m.get("content") or "")
+        if day and (key in MODIFIED or key in PUBLISHED):
+            found.setdefault("modified" if key in MODIFIED else "published", day.group(0))
+    for script in doc.xpath("//script[@type='application/ld+json']"):
+        for kind, day in LD_DATE.findall(script.text or ""):
+            found.setdefault(kind.lower(), day)
+    if not found:
+        stamp = doc.xpath("string(//time[@datetime][1]/@datetime)")
+        if day := DAY.search(stamp):
+            found["published"] = day.group(0)
+    day = found.get("modified") or found.get("published")
+    return day if day and day <= (dt.date.today() + dt.timedelta(days=1)).isoformat() else None
+
+
+def parse(raw: bytes) -> Page:
+    """The page's date and its readable text as passages, in reading order."""
     doc = lxml.html.document_fromstring(raw)
+    date = page_date(doc)
     for el in doc.xpath("|".join("//" + tag for tag in DROP_TAGS)):
         if el.getparent() is not None:
             el.drop_tree()
@@ -245,7 +302,7 @@ def passages(raw: bytes) -> list[str]:
             continue
         group = parent if el.tag in GROUPED else None
         out.extend(split_long(text))
-    return out
+    return Page(date, out)
 
 
 # ---------- choosing what the model reads ----------
@@ -287,7 +344,7 @@ def rank(q: str, texts: list[str]) -> list[float]:
     return scores
 
 
-def sources_text(q: str, results: list[dict], pages: list[list[str] | None]) -> str:
+def sources_text(q: str, results: list[dict], pages: list[Page | None]) -> str:
     picked: list[list[tuple[int, str]]] = [[] for _ in results]
     ranked = [0] * len(results)
     used = 0
@@ -297,9 +354,10 @@ def sources_text(q: str, results: list[dict], pages: list[list[str] | None]) -> 
             used += len(r["content"])
     # Each page's lead, then the best passages anywhere, until the budget is spent.
     candidates: list[tuple[int, int, str]] = []
-    for i, ps in enumerate(pages):
-        if not ps:
+    for i, page in enumerate(pages):
+        if not page:
             continue
+        ps = page.passages
         lead = next((k for k, p in enumerate(ps) if len(p) >= 80), None)
         if lead is not None and ps[lead][:60] not in results[i]["content"]:
             picked[i].append((lead, ps[lead][:LEAD_CHARS]))
@@ -317,8 +375,9 @@ def sources_text(q: str, results: list[dict], pages: list[list[str] | None]) -> 
     blocks = []
     for i, r in enumerate(results):
         host = (urlparse(r["url"]).hostname or "").removeprefix("www.")
+        date = pages[i].date if pages[i] else None
         body = "\n".join(p for _, p in sorted(picked[i]))
-        blocks.append(f"[{i + 1}] {r['title']} ({host})\n{body}".strip())
+        blocks.append(f"[{i + 1}] {r['title']} ({host}{f', dated {date}' if date else ''})\n{body}".strip())
     return "\n\n".join(blocks)
 
 
@@ -357,18 +416,20 @@ def flush() -> None:
         log.warning("warming %s failed: %s", OLLAMA_MODEL, e)
 
 
-def gather(jobs: list[Future], start: float) -> list[list[str] | None]:
-    """Waits for result pages: all of them, or enough after FETCH_SOON, or what came by FETCH_WAIT."""
+def gather(jobs: list[Future], start: float) -> list[Page | None]:
+    """Waits for result pages: all of them, or enough after FETCH_SOON, or what came by FETCH_WAIT,
+    or on a slow host the first one by FETCH_FIRST."""
     def good(job: Future) -> bool:
         return job.done() and not job.exception() and bool(job.result())
 
     done, pending = wait(jobs, timeout=FETCH_SOON)
-    while pending and sum(map(good, jobs)) < ENOUGH_PAGES:
-        left = start + FETCH_WAIT - time.monotonic()
-        if left <= 0:
+    while pending:
+        have = sum(map(good, jobs))
+        left = start + (FETCH_WAIT if have else FETCH_FIRST) - time.monotonic()
+        if have >= ENOUGH_PAGES or left <= 0:
             break
         done, pending = wait(pending, timeout=left, return_when=FIRST_COMPLETED)
-    pages: list[list[str] | None] = []
+    pages: list[Page | None] = []
     for job in jobs:
         if job.done() and job.exception():
             log.debug("page skipped: %s", job.exception())
@@ -376,29 +437,47 @@ def gather(jobs: list[Future], start: float) -> list[list[str] | None]:
     return pages
 
 
+def answer_of(raw: str, done: bool) -> str | None:
+    """The answer in what the model has written so far, without its kind line: None while that line is
+    unfinished, empty for "Kind: none"."""
+    s = raw.lstrip()
+    if "kind:".startswith(s[:5].lower()):
+        m = KIND_LINE.match(s)
+        if not m:
+            return "" if done else None
+        if m.group(1).strip().lower().startswith("none"):
+            return ""
+        s = s[m.end():].lstrip()
+    return s
+
+
 def stream(resp: t.Any, key: str) -> t.Iterator[str]:
-    """Relays the model's words as they come, holding back the first few to catch NONE."""
-    text, sent, done = "", 0, False
+    """Relays the model's words as they come, holding back its kind line and the first few words to
+    catch NONE."""
+    text, answer, sent, done = "", "", 0, False
     try:
         for line in resp:
             msg = json.loads(line)
             text += (msg.get("message") or {}).get("content") or ""
             done = bool(msg.get("done"))
+            got = answer_of(text, done)
+            if got is None:
+                continue
+            answer = got
             if not sent:
-                head = text.lstrip()
-                if len(head) < 5 and not done:
+                if len(answer) < 5 and not done:
                     continue
-                if head.upper().startswith("NONE"):
-                    text, done = "", True
+                if not answer or answer.upper().startswith("NONE"):
+                    answer, done = "", True
                     break
-                text = head
-            if len(text) > sent:
-                yield text[sent:]
-                sent = len(text)
+            if len(answer) > sent:
+                yield answer[sent:]
+                sent = len(answer)
             if done:
                 break
-        if done:
-            answers.put(key, text.strip())
+        # An empty answer may only mean the pages were slow this time; ask again next time.
+        if done and answer.strip():
+            answers.put(key, answer.strip())
     finally:
         resp.close()
         pool.submit(hold, 0)
@@ -454,7 +533,7 @@ def view() -> flask.Response:
             "options": {"temperature": 0.1, "num_predict": 200},
             "messages": [
                 {"role": "system", "content": system()},
-                {"role": "user", "content": f"{prompt}\n\nQuestion: {q}"},
+                {"role": "user", "content": f"<sources>\n{prompt}\n</sources>\n\nQuestion: {q}\n\n{REMINDER}"},
             ],
         }, 30)
     except (urllib.error.URLError, OSError) as e:

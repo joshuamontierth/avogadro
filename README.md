@@ -77,10 +77,12 @@ The reply is plain text, streamed as it is written: one to three sentences endin
 
 To be quick, the server:
 
-- fetches the result pages in parallel and gives up on slow ones after a second, when their snippets stand in for them;
+- fetches the result pages in parallel, reading at most 700 KB of each, and gives up on slow ones after a second, when their snippets stand in for them (a slow host waits up to two seconds for the first page);
 - sends the model only the passages that share the question's words, plus each page's opening, about 1,400 tokens in all;
 - clears the model's cache of the last long prompt while the pages download;
 - loads the model while a question is still being typed (`POST /answer/warm`).
+
+To stay accurate, the model answers only from those passages, each labelled with its page's date, and gives one answer instead of a tour of every source's figure. It first names how its sources relate: the same fact at different precision, older and newer figures, facts that fit together, or differing views. The server drops that line. The labels follow Google Research's study of conflicting sources in retrieval ([DRAGged into Conflicts](https://arxiv.org/abs/2506.08500), 2025). On a fixed set of 18 questions, that label plus a one-line reminder at the end of the prompt cut answers that list each source's figure from a third to one in twenty.
 
 #### Setting up the model
 
