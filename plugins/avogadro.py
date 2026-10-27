@@ -19,6 +19,9 @@ Images. The JSON API hands out raw image URLs, so the page would fetch them
 straight from image hosts. This signs each one, in results and infoboxes alike,
 for SearXNG's own image proxy at ``/image``, and adds ``/favicon/<host>``, which
 answers from SearXNG's favicon resolver cache.
+
+Stocks. ``/stock`` serves a quote and price series for the page's stock card and
+for other clients; see ``avogadro_stock``.
 """
 
 import logging
@@ -33,7 +36,7 @@ from searx import settings
 from searx.favicons.proxy import search_favicon
 from searx.webutils import new_hmac
 
-from . import Plugin, PluginInfo
+from . import Plugin, PluginInfo, avogadro_stock
 
 if t.TYPE_CHECKING:
     from searx.extended_types import SXNG_Request
@@ -270,12 +273,13 @@ class SXNGPlugin(Plugin):
         self.info = PluginInfo(
             id=self.id,
             name="Avogadro",
-            description="Merge copies of the same page and serve result images and favicons through this instance",
+            description="Merge copies of the same page, serve result images and favicons through this instance, and serve stock quotes",
             preference_section="privacy",
         )
 
     def init(self, app: "flask.Flask") -> bool:
         app.add_url_rule("/favicon/<host>", endpoint="avogadro_favicon", view_func=favicon)
+        app.add_url_rule("/stock", endpoint="avogadro_stock", view_func=avogadro_stock.view)
         return True
 
     def pre_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> bool:

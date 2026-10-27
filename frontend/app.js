@@ -248,6 +248,11 @@
     const params = new URLSearchParams({ q: state.q, format: "json", categories: state.cat, pageno: String(state.page) });
     if (state.time) params.set("time_range", state.time);
 
+    // A query that names a ticker starts its quote alongside the search.
+    const intent = !append && state.cat === "general" ? stockIntent(state.q) : null;
+    const guess = stockGuess(intent);
+    const early = guess ? loadStock(guess, "1D", ctrl.signal) : null;
+
     let data;
     try {
       const res = await fetch("/search?" + params, { signal: ctrl.signal, headers: { Accept: "application/json" } });
@@ -261,11 +266,27 @@
       return;
     }
     if (ctrl !== searchCtrl) return;
+
+    // Results confirm or find the ticker. The card gets a moment to arrive so the results
+    // don't jump down under it; if it is slower, it is put in place when it comes.
+    let stock = null;
+    const symbol = stockSymbol(intent, data.results || []);
+    if (symbol) {
+      const pending = symbol === guess ? early : loadStock(symbol, "1D", ctrl.signal);
+      stock = await Promise.race([pending, new Promise((done) => setTimeout(done, 1200, undefined))]);
+      if (ctrl !== searchCtrl) return;
+      if (stock === undefined) {
+        pending.then((late) => { if (late && ctrl === searchCtrl) lead.prepend(stockCard(late)); });
+        stock = null;
+      }
+    }
     setLoading(false);
-    render(data, append);
+    render(data, append, stock);
   }
 
   function clear() {
+    stockSizer.disconnect();
+    stockView = null;
     lead.replaceChildren();
     side.replaceChildren();
     list.replaceChildren();
@@ -276,7 +297,7 @@
     sel = -1;
   }
 
-  function render(data, append) {
+  function render(data, append, stock) {
     if (!append) {
       clear();
       lastData = data;
@@ -290,6 +311,7 @@
     });
 
     if (!append) {
+      if (stock) lead.append(stockCard(stock));
       renderLead(data);
       if (state.cat === "general" && data.infoboxes && data.infoboxes.length) renderInfobox(data.infoboxes[0]);
     }
@@ -302,7 +324,7 @@
       el.addEventListener("animationend", () => el.classList.remove("condense"), { once: true });
     });
 
-    const nothing = !append && !fresh.length && !$(".answer", lead) && !side.childElementCount;
+    const nothing = !append && !fresh.length && !$(".answer, .stock", lead) && !side.childElementCount;
     if (nothing) renderEmpty(data);
     renderFoot(data, fresh.length, append);
 
@@ -346,6 +368,356 @@
       attrs.length ? h("dl", null, attrs.map((a) => h("div", null, h("dt", { text: a.label }), h("dd", { text: a.value })))) : null,
       links.length ? h("div", { class: "info-links" },
         links.map((l) => h("a", { class: "chip", href: l.url, rel: "noreferrer noopener", text: l.title }))) : null));
+  }
+
+  // ---------- stocks ----------
+  // A ticker query ("NVDA", "$nvda", "nvda stock", "nvidia stock") gets a quote card above
+  // the results, from this server's /stock. A bare word counts as a ticker only when quote
+  // pages for it are among the top results, so "on" or "usa" stay plain searches.
+
+  const RANGES = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"];
+  const SPANS = {
+    "1D": "today", "5D": "past 5 days", "1M": "past month", "6M": "past 6 months",
+    YTD: "year to date", "1Y": "past year", "5Y": "past 5 years", MAX: "all time",
+  };
+  const TICKER = /^[A-Z]{1,5}(?:\.[A-Z])?$/;
+  const STOCK_WORDS = new Set(["stock", "stocks", "share", "shares", "price", "prices", "quote", "ticker", "today", "now", "live", "chart", "current"]);
+  // Hosts whose quote pages name the ticker in the path.
+  const QUOTE_PAGES = [
+    [/(^|\.)finance\.yahoo\.com$/, /^\/quote\/([^/?#]+)/],
+    [/^(www\.)?google\.com$/, /^\/finance\/quote\/([^/:?#]+):/],
+    [/^(www\.)?cnbc\.com$/, /^\/quotes\/([^/?#]+)/],
+    [/^(www\.)?marketwatch\.com$/, /^\/investing\/(?:stock|fund)\/([^/?#]+)/],
+    [/^(www\.)?nasdaq\.com$/, /^\/market-activity\/(?:stocks|etf|funds-and-etfs)\/([^/?#]+)/],
+    [/^(www\.)?robinhood\.com$/, /^\/(?:us\/en\/)?stocks\/([^/?#]+)/],
+    [/^(www\.)?stockanalysis\.com$/, /^\/(?:stocks|etf)\/([^/?#]+)/],
+    [/^(www\.)?morningstar\.com$/, /^\/(?:stocks|etfs)\/[a-z]+\/([^/?#]+)/],
+    [/^(www\.)?tradingview\.com$/, /^\/symbols\/[A-Za-z]+-([^/?#]+)/],
+    [/^(www\.)?zacks\.com$/, /^\/stock\/quote\/([^/?#]+)/],
+    [/^(www\.)?seekingalpha\.com$/, /^\/symbol\/([^/?#]+)/],
+    [/^(www\.)?fool\.com$/, /^\/quote\/[a-z]+\/([^/?#]+)/],
+    [/^(www\.)?bloomberg\.com$/, /^\/quote\/([^/:?#]+):US/],
+    [/^(www\.)?wsj\.com$/, /^\/market-data\/quotes\/([^/?#]+)/],
+    [/^(www\.)?stocktwits\.com$/, /^\/symbol\/([^/?#]+)/],
+    [/^(www\.)?macrotrends\.net$/, /^\/stocks\/charts\/([^/?#]+)/],
+    [/^markets\.businessinsider\.com$/, /^\/stocks\/([a-z.]+)-stock/],
+    [/^(www\.)?public\.com$/, /^\/stocks\/([^/?#]+)/],
+  ];
+
+  function tickerOf(raw) {
+    let s = String(raw);
+    try { s = decodeURIComponent(s); } catch { /* keep it as it came */ }
+    s = s.toUpperCase().replace(/-([A-Z])$/, ".$1"); // BRK-B is BRK.B
+    return TICKER.test(s) ? s : null;
+  }
+
+  function quotePage(url) {
+    let u;
+    try { u = new URL(url); } catch { return null; }
+    for (const [host, path] of QUOTE_PAGES) {
+      if (!host.test(u.hostname)) continue;
+      const m = path.exec(u.pathname);
+      return m ? tickerOf(m[1]) : null;
+    }
+    return null;
+  }
+
+  // What a query says about stocks: a ticker for sure ($NVDA), a word that may be one
+  // (NVDA, nvda, on), or a stock asked for by name or ticker (nvidia stock, nvda stock).
+  function stockIntent(q) {
+    const m = /^\$([A-Za-z]{1,5}(?:[.-][A-Za-z])?)$/.exec(q);
+    if (m) return { symbol: tickerOf(m[1]), sure: true };
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+      const symbol = /^[A-Za-z]{1,5}(?:[.-][A-Za-z])?$/.test(q) ? tickerOf(q) : null;
+      return symbol ? { symbol, bare: true, caps: q === q.toUpperCase() } : null;
+    }
+    const asked = words.some((w) => w === "stock" || w === "stocks" || w === "shares" || w === "ticker") || /\bshare price\b/.test(q.toLowerCase());
+    if (!asked || words.length > 6) return null;
+    const rest = words.filter((w) => !STOCK_WORDS.has(w));
+    return { symbol: rest.length === 1 && /^\$?[a-z]{1,5}(?:[.-][a-z])?$/.test(rest[0]) ? tickerOf(rest[0].replace(/^\$/, "")) : null, named: true };
+  }
+
+  // A guess worth fetching while the search runs.
+  function stockGuess(intent) {
+    return intent && intent.symbol && (intent.sure || intent.caps || intent.named) ? intent.symbol : null;
+  }
+
+  function stockSymbol(intent, results) {
+    if (!intent) return null;
+    if (intent.sure) return intent.symbol;
+    const votes = new Map();
+    for (const r of results.slice(0, 10)) {
+      const s = quotePage(r.url);
+      if (s) votes.set(s, (votes.get(s) || 0) + 1);
+    }
+    if (intent.bare) return (votes.get(intent.symbol) || 0) >= 2 ? intent.symbol : null;
+    const [best, n] = [...votes].sort((a, b) => b[1] - a[1])[0] || [];
+    return n >= 2 ? best : intent.symbol;
+  }
+
+  async function loadStock(symbol, range, signal) {
+    try {
+      const res = await fetch(`/stock?symbol=${encodeURIComponent(symbol)}&range=${range}`, { signal });
+      if (!res.ok) return null;
+      const s = await res.json();
+      return s && typeof s.price === "number" && Array.isArray(s.points) ? s : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const money = (v) => (v == null ? "–" : v.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: Math.abs(v) < 1 ? 4 : 2 }));
+  const signed = (v) => (v < 0 ? "−" : "+") + money(Math.abs(v));
+  const percent = (v) => v.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const move = (change, pct) => `${signed(change)} (${percent(Math.abs(pct))}%)`;
+  const trend = (v) => (v > 0 ? "is-up" : v < 0 ? "is-down" : null);
+  // Exchange time: a US session reads 9:30 to 4 wherever the reader is.
+  const et = (opts) => new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", ...opts });
+  const etTime = et({ hour: "numeric", minute: "2-digit" });
+  const etDayTime = et({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const etDay = et({ month: "short", day: "numeric", year: "numeric" });
+  const etDate = et({ month: "short", day: "numeric" });
+  const etMonth = et({ month: "short", year: "numeric" });
+  const etYear = et({ year: "numeric" });
+  const etHour = et({ hour: "numeric" });
+
+  let stockView = null; // the card on screen, redrawn when its width changes
+  const stockSizer = new ResizeObserver(() => stockView?.draw());
+
+  function stockCard(s) {
+    const view = { range: "1D", data: { "1D": s }, idx: -1, draw };
+    const val = h("span", { class: "stock-val" });
+    const moveEl = h("p", { class: "stock-move" });
+    const chart = h("div", { class: "stock-chart" });
+    const buttons = RANGES.map((r) => h("button", { type: "button", "aria-pressed": String(r === "1D"), text: r, onclick: () => setRange(r) }));
+    const ext = s.extended;
+    const meta = [
+      s.state === "open" ? `Open · ${etTime.format(s.as_of * 1000)} ET` : s.as_of ? `At close · ${etDayTime.format(s.as_of * 1000)} ET` : "",
+    ];
+    const card = h("section", { class: "stock", "aria-label": `${s.name} stock` },
+      h("p", { class: "stock-name", text: s.name }),
+      h("p", { class: "stock-sym", text: [s.exchange, s.symbol].filter(Boolean).join(": ") }),
+      h("p", { class: "stock-now" }, val, s.currency && h("small", { text: s.currency })),
+      moveEl,
+      h("p", { class: "stock-meta" }, meta.filter(Boolean),
+        ext && typeof ext.price === "number" ? [
+          meta[0] ? " · " : "",
+          ext.state === "pre" ? "Pre-market " : "After hours ",
+          money(ext.price), " ",
+          typeof ext.change === "number" ? h("span", { class: trend(ext.change), text: move(ext.change, ext.change_pct || 0) }) : null,
+        ] : null),
+      h("div", { class: "stock-ranges", role: "group", "aria-label": "Chart range" }, buttons),
+      chart,
+      stockStats(s));
+
+    // i < 0 shows the latest price; otherwise point i of the chart.
+    function show(i) {
+      const d = view.data[view.range];
+      const pts = d.points;
+      const ref = view.range === "1D" ? d.prev_close : pts.length ? pts[0][1] : null;
+      let price = d.price, change, pct, label;
+      if (i >= 0 && pts[i]) {
+        price = pts[i][1];
+        const t = pts[i][0] * 1000;
+        label = view.range === "1D" ? etTime.format(t) + " ET" : view.range === "5D" ? etDayTime.format(t) + " ET" : etDay.format(t);
+      } else {
+        label = SPANS[view.range];
+      }
+      if (view.range === "1D" && i < 0) {
+        change = d.change;
+        pct = d.change_pct;
+      } else if (ref) {
+        change = price - ref;
+        pct = (change / ref) * 100;
+      }
+      val.textContent = money(price);
+      moveEl.className = "stock-move " + (trend(change) || "");
+      moveEl.replaceChildren(typeof change === "number" ? move(change, pct || 0) + " " : "", h("span", { class: "stock-when", text: label }));
+    }
+
+    function draw() {
+      const d = view.data[view.range];
+      const pts = d.points;
+      const W = Math.round(chart.clientWidth);
+      if (!W) return;
+      chart.replaceChildren();
+      if (pts.length < 2) return;
+      const H = narrow.matches ? 176 : 216;
+      const GUT = 46, AXIS = 22, TOP = 8;
+      const pw = W - GUT, ph = H - AXIS - TOP;
+      const ref = view.range === "1D" && typeof d.prev_close === "number" ? d.prev_close : null;
+      const vals = pts.map((p) => p[1]).concat(ref == null ? [] : [ref]);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 1;
+      lo -= pad;
+      hi += pad;
+      const sess = view.range === "1D" && Array.isArray(d.session) && d.session[1] > d.session[0] ? d.session : null;
+      const xOf = sess
+        ? (i) => Math.max(0, Math.min(pw, ((pts[i][0] - sess[0]) / (sess[1] - sess[0])) * pw))
+        : (i) => (i / (pts.length - 1)) * pw;
+      const yOf = (v) => TOP + (1 - (v - lo) / (hi - lo)) * ph;
+      const last = pts[pts.length - 1][1];
+      const dir = trend(last - (ref ?? pts[0][1])) || "is-up";
+
+      const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: dir, role: "img", tabindex: "0",
+        "aria-label": `${s.symbol}, ${SPANS[view.range]}: ${money(pts[0][1])} to ${money(last)}` });
+      const defs = svgEl("defs");
+      const fill = svgEl("linearGradient", { id: "stock-fill", x1: "0", y1: "0", x2: "0", y2: "1" });
+      fill.append(svgEl("stop", { offset: "0", "stop-color": "currentColor", "stop-opacity": "0.2" }),
+        svgEl("stop", { offset: "1", "stop-color": "currentColor", "stop-opacity": "0" }));
+      defs.append(fill);
+      svg.append(defs);
+
+      const ticks = niceTicks(lo, hi, 3);
+      const step = ticks.length > 1 ? ticks[1] - ticks[0] : hi - lo;
+      for (const v of ticks) {
+        const y = yOf(v);
+        svg.append(svgEl("line", { class: "grid", x1: 0, x2: pw, y1: y, y2: y }));
+        svg.append(svgText(pw + 8, y + 4, priceTick(v, step), "start"));
+      }
+      for (const [x, text, anchor] of timeTicks(view.range, pts, sess, pw, xOf)) svg.append(svgText(x, H - 5, text, anchor));
+      if (ref != null) svg.append(svgEl("line", { class: "prev", x1: 0, x2: pw, y1: yOf(ref), y2: yOf(ref) }));
+
+      const line = pts.map((p, i) => `${i ? "L" : "M"}${xOf(i).toFixed(1)},${yOf(p[1]).toFixed(1)}`).join("");
+      svg.append(svgEl("path", { class: "area", d: `${line}L${xOf(pts.length - 1).toFixed(1)},${TOP + ph}L${xOf(0).toFixed(1)},${TOP + ph}Z` }));
+      svg.append(svgEl("path", { class: "line", d: line }));
+      const hair = svgEl("line", { class: "hair", y1: TOP, y2: TOP + ph, visibility: "hidden" });
+      const dot = svgEl("circle", { class: "dot", r: 4, visibility: "hidden" });
+      svg.append(hair, dot);
+      chart.append(svg);
+
+      const scrub = (i) => {
+        view.idx = i;
+        const on = i >= 0;
+        hair.setAttribute("visibility", on ? "visible" : "hidden");
+        dot.setAttribute("visibility", on ? "visible" : "hidden");
+        if (on) {
+          const x = xOf(i);
+          hair.setAttribute("x1", x);
+          hair.setAttribute("x2", x);
+          dot.setAttribute("cx", x);
+          dot.setAttribute("cy", yOf(pts[i][1]));
+        }
+        show(i);
+      };
+      const pick = (clientX) => {
+        const box = svg.getBoundingClientRect();
+        const x = Math.max(0, Math.min(pw, ((clientX - box.left) * W) / box.width));
+        if (!sess) return Math.round((x / pw) * (pts.length - 1));
+        const t = sess[0] + (x / pw) * (sess[1] - sess[0]);
+        let best = 0;
+        for (let i = 1; i < pts.length; i++) if (Math.abs(pts[i][0] - t) < Math.abs(pts[best][0] - t)) best = i;
+        return best;
+      };
+      svg.addEventListener("pointerdown", (e) => scrub(pick(e.clientX)));
+      svg.addEventListener("pointermove", (e) => scrub(pick(e.clientX)));
+      svg.addEventListener("pointerleave", () => scrub(-1));
+      svg.addEventListener("pointercancel", () => scrub(-1));
+      svg.addEventListener("blur", () => scrub(-1));
+      svg.addEventListener("keydown", (e) => {
+        const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+        if (step) scrub(Math.max(0, Math.min(pts.length - 1, (view.idx < 0 ? pts.length - 1 : view.idx) + step)));
+        else if (e.key === "Home") scrub(0);
+        else if (e.key === "End") scrub(pts.length - 1);
+        else if (e.key === "Escape") scrub(-1);
+        else return;
+        e.preventDefault();
+      });
+      if (view.idx >= pts.length) view.idx = -1;
+    }
+
+    async function setRange(r) {
+      if (r === view.range) return;
+      const was = view.range;
+      view.range = r;
+      view.idx = -1;
+      buttons.forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === r)));
+      if (!view.data[r]) {
+        chart.classList.add("is-loading");
+        const d = await loadStock(s.symbol, r);
+        chart.classList.remove("is-loading");
+        if (d) view.data[r] = d;
+        if (view.range !== r) return; // another range was picked meanwhile
+        if (!d) {
+          view.range = was;
+          buttons.forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === was)));
+          return;
+        }
+      }
+      draw();
+      show(-1);
+    }
+
+    show(-1);
+    stockSizer.disconnect();
+    stockSizer.observe(chart);
+    stockView = view;
+    return card;
+  }
+
+  function stockStats(s) {
+    const st = s.stats || {};
+    const rows = [
+      ["Open", money(st.open)], ["High", money(st.high)], ["Low", money(st.low)],
+      ["Mkt cap", st.mkt_cap || "–"], ["P/E ratio", money(st.pe)], ["Div yield", st.div_yield == null ? "–" : percent(st.div_yield) + "%"],
+      ["Prev close", money(s.prev_close)], ["52-wk high", money(st.wk52_high)], ["52-wk low", money(st.wk52_low)],
+    ];
+    return h("dl", { class: "stock-stats" }, rows.map(([k, v]) => h("div", null, h("dt", { text: k }), h("dd", { text: v }))));
+  }
+
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+    return el;
+  }
+
+  function svgText(x, y, text, anchor) {
+    const t = svgEl("text", { x: x.toFixed(1), y: y.toFixed(1), "text-anchor": anchor });
+    t.textContent = text;
+    return t;
+  }
+
+  function niceTicks(lo, hi, n) {
+    const raw = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+    const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
+    const out = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(+v.toFixed(10));
+    return out;
+  }
+
+  function priceTick(v, step) {
+    const digits = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+    return v.toLocaleString("en", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
+
+  // [x, label, anchor] along the bottom: session hours on 1D, day starts on 5D, else four even dates.
+  function timeTicks(range, pts, sess, pw, xOf) {
+    const out = [];
+    if (sess) {
+      for (const hr of [10, 12, 14, 16]) {
+        const t = sess[0] + (hr - 9.5) * 3600;
+        if (t > sess[1]) continue;
+        const x = ((t - sess[0]) / (sess[1] - sess[0])) * pw;
+        out.push([x, etHour.format(t * 1000), x > pw - 20 ? "end" : "middle"]);
+      }
+      return out;
+    }
+    if (range === "5D") {
+      let day = "";
+      pts.forEach((p, i) => {
+        const d = etDate.format(p[0] * 1000);
+        if (d !== day) out.push([xOf(i), d, i ? "middle" : "start"]);
+        day = d;
+      });
+      return out;
+    }
+    const fmt = range === "1M" ? etDate : range === "5Y" || range === "MAX" ? etYear : etMonth;
+    for (let k = 0; k < 4; k++) {
+      const i = Math.round((k * (pts.length - 1)) / 4);
+      out.push([xOf(i), fmt.format(pts[i][0] * 1000), k ? "middle" : "start"]);
+    }
+    return out;
   }
 
   function siteLine(r, extra) {

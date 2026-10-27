@@ -17,8 +17,8 @@
 		-Server
 	}
 
-	# SearXNG: suggestions, the image proxy and favicons.
-	@api path /autocompleter /image /favicon/*
+	# SearXNG: suggestions, the image proxy, favicons and stock quotes.
+	@api path /autocompleter /image /favicon/* /stock
 	handle @api {
 		reverse_proxy searxng:8080
 	}

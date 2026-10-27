@@ -10,6 +10,7 @@ services:
     volumes:
       - ./config/settings.yml:/etc/searxng/settings.yml:ro
       - ./plugins/avogadro.py:/usr/local/searxng/searx/plugins/avogadro.py:ro
+      - ./plugins/avogadro_stock.py:/usr/local/searxng/searx/plugins/avogadro_stock.py:ro
       - searxng_cache:/var/cache/searxng
 
   # The Avogadro page, plus the few SearXNG routes it uses.

@@ -8,6 +8,7 @@ Avogadro replaces SearXNG's stock search page with a clean, quiet one. Behind it
 
 - **Results:** All, Images, News, Videos, IT and Science tabs, a time filter, Wikipedia infoboxes, instant answers, "did you mean" and related searches.
 - **Images:** a justified grid with a viewer you can step through with the arrow keys.
+- **Stocks:** a ticker search ("NVDA", "$spy", "nvidia stock") shows a quote card: price, change and after-hours price, a chart from one day to all time that you can scrub, and the day's figures.
 - **Keyboard:** `/` focuses the search box; `j` and `k` move through results, and `Enter` opens one.
 - **Autocomplete,** plus OpenSearch, so browsers can offer it as a search engine.
 - **Light and dark** themes that follow your system, and a layout built for phones as well as desktops.
@@ -20,6 +21,7 @@ The page only ever talks to your own server:
 - A strict Content Security Policy blocks every third-party request.
 - Result images go through SearXNG's own image proxy.
 - Favicons come from SearXNG's cache.
+- Stock quotes are fetched by your server, from CNBC, never by the browser.
 - The font is self-hosted.
 - Links don't send your search to the sites you open (`Referrer-Policy: no-referrer`).
 
@@ -27,10 +29,38 @@ The page only ever talks to your own server:
 
 Avogadro uses two containers:
 
-- **`searxng`:** the stock SearXNG image, with no published port. It loads `config/settings.yml` and the small `plugins/avogadro.py` plugin. The plugin signs result images for SearXNG's `/image` proxy and adds a `/favicon/<host>` route.
-- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only four routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image` and `/favicon/*`.
+- **`searxng`:** the stock SearXNG image, with no published port. It loads `config/settings.yml` and the small `plugins/avogadro.py` plugin. The plugin signs result images for SearXNG's `/image` proxy, adds a `/favicon/<host>` route, and serves quotes at `/stock` (`plugins/avogadro_stock.py`).
+- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only five routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image`, `/favicon/*` and `/stock`.
 
 The atom is drawn in `frontend/cloud.js`. Each dot is a sample from the orbital's probability density |ψ|². The two colours are the two signs of the wavefunction.
+
+### The stock API
+
+`/stock` is plain JSON, so other tools can use it too. Its shape is kept stable:
+
+```
+GET /stock?symbol=NVDA&range=1D        range: 1D 5D 1M 6M YTD 1Y 5Y MAX (default 1D)
+
+{
+  "symbol": "NVDA", "name": "NVIDIA Corporation", "exchange": "NASDAQ", "currency": "USD",
+  "price": 216.0, "change": 5.04, "change_pct": 2.39, "prev_close": 210.96,
+  "state": "post", "as_of": 1793045700,
+  "extended": {"state": "post", "price": 216.5, "change": 0.5, "change_pct": 0.23, "as_of": 1793059197},
+  "range": "1D", "session": [1793021400, 1793044800],
+  "points": [[1793021400, 213.4], ...],
+  "stats": {"open": 213.11, "high": 217.75, "low": 212.61, "volume": 83200291, "mkt_cap": "5.206T",
+            "pe": 27.3, "div_yield": 0.46, "wk52_high": 243.37, "wk52_low": 164.27}
+}
+```
+
+- **Times** are unix seconds. Percentages are plain numbers: `0.46` means 0.46%.
+- **`state`** is `open`, `pre`, `post` or `closed`. `extended` holds the pre-market or after-hours price, or is `null`.
+- **`points`** are `[time, close]` pairs in ascending order, at most 400 of them. 1D and 5D cover only the regular session.
+- **`session`** is the 1D chart's time span, so a day in progress draws only partway. It is `null` for other ranges.
+- **Stats** a security doesn't have are `null`.
+- **Errors:** an unknown symbol returns 404, a bad symbol or range 400, and a failed source 502, each as `{"error": "..."}`.
+
+Quotes are cached for a minute. Series are cached for a minute (1D) up to an hour (long ranges).
 
 ## Setup
 
