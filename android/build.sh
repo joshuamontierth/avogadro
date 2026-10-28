@@ -99,6 +99,9 @@ if [[ " $* " == *" publish "* ]]; then
   printf '{"version_code":%s,"version_name":"%s","url":"/apk/avogadro.apk","sha256":"%s","size":%s}\n' \
     "$code" "$name" "$(sha256sum "$out/avogadro.apk" | cut -d' ' -f1)" "$(stat -c %s "$out/avogadro.apk")" \
     > "$out/.version.json" && mv "$out/.version.json" "$out/version.json"
+  case "$(optional APP_UPDATES)" in
+    false|off|no|0) echo "== APP_UPDATES is off: the instance doesn't serve /apk/, so installed apps won't see this build" ;;
+  esac
   for mirror in $(optional AVOGADRO_MIRRORS); do
     echo "== publishing to $mirror"
     rsync -a --delay-updates -e "ssh ${ssh_opts[*]}" "$out/" "$mirror/frontend/apk/"

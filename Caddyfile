@@ -56,8 +56,11 @@
 		redir * /?{query} 302
 	}
 
-	# The Android app and its version.json, put here by android/build.sh publish.
+	# The Android app and its version.json, put here by android/build.sh publish. With
+	# APP_UPDATES off (an app manager installs the app instead), installed apps find nothing.
+	@no_app_updates expression `"{$APP_UPDATES:true}" in ["false", "off", "no", "0"]`
 	handle /apk/* {
+		respond @no_app_updates 404
 		root * /srv
 		header Cache-Control "no-cache"
 		file_server

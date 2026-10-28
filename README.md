@@ -164,6 +164,8 @@ android/build.sh publish install
 
 Bump `versionCode` in `android/app/build.gradle.kts` before publishing. The app checks for a new build when it comes to the front, downloads it, and checks its size, SHA-256, package, version and signing key before installing it. It installs on its own a few seconds after you leave the app, or straight away when you tap "Update" on the home screen. The first time, Android asks you to let Avogadro install apps.
 
+If an app manager installs and updates the app instead, set `APP_UPDATES=false` in `.env` and restart the `avogadro` container. `/apk/` then answers 404, so the app never offers an update and the manager stays its installer.
+
 ## Configuration
 
 `config/settings.yml` holds only overrides on top of SearXNG's defaults. Most notably, it sets the engine list. Some engines block SearXNG from some networks, so check which ones answer from yours and turn the rest off. Restart after editing:
