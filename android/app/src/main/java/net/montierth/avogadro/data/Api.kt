@@ -220,6 +220,15 @@ class Api(private val client: OkHttpClient = defaultClient()) {
     }.flowOn(Dispatchers.IO)
 
     /** Wakes the instance's model ahead of a question; nothing comes back. */
+    /** Tells the instance a search led to [url]; a similar search ranks it higher next time. */
+    suspend fun click(q: String, url: String, title: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = buildJsonObject { put("q", q); put("url", url); put("title", title) }.toString().toRequestBody(JSON)
+            client.newCall(Request.Builder().url("$BASE_URL/click").post(body).build()).execute().close()
+        }
+        Unit
+    }
+
     suspend fun warm() = withContext(Dispatchers.IO) {
         runCatching {
             client.newCall(Request.Builder().url("$BASE_URL/answer/warm").post(ByteArray(0).toRequestBody()).build()).execute().close()

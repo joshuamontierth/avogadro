@@ -6,6 +6,7 @@ Avogadro replaces SearXNG's stock search page with a clean, quiet one. Behind it
 
 ## Features
 
+- **Ranking:** results are ordered by one vote per search index, the site your search names comes first, and pages you've opened before rise for similar searches (see [Ranking](#ranking)).
 - **Results:** All, Images, News, Videos, IT and Science tabs, a time filter, Wikipedia infoboxes, instant answers, "did you mean" and related searches.
 - **Images:** a justified grid with a viewer you can step through with the arrow keys.
 - **Answers:** a question ("how tall is everest", "boiling point of water", "rust vs go") gets a short answer above the results, written by a local model from the top results' pages as you watch, each sentence citing its sources. Needs an [Ollama](https://ollama.com) server, which docker-compose.yml can run for you; without one, questions get plain results.
@@ -27,6 +28,7 @@ The page only ever talks to your own server:
 - For an answer, your server fetches the top results' pages itself and sends them, with the question, to the Ollama server you configure. Only pages on the public internet are fetched.
 - The font is self-hosted.
 - Links don't send your search to the sites you open (`Referrer-Policy: no-referrer`).
+- When you open a result, the page tells your server which search it came from, to rank it higher next time. These are kept in `data/clicks/` on your server and nowhere else; delete the files there to forget them.
 
 ## How it works
 
@@ -34,9 +36,19 @@ Avogadro uses two containers, plus a third for answers if you want the model on 
 
 - **`searxng`:** the stock SearXNG image, with no published port. It loads `config/settings.yml` and the small `plugins/avogadro.py` plugin. The plugin signs result images for SearXNG's `/image` proxy, adds a `/favicon/<host>` route, serves quotes at `/stock` (`plugins/avogadro_stock.py`) and answers at `/answer` (`plugins/avogadro_answer.py`).
 - **`ollama`** (optional, the `answers` profile): the model that writes [answers](#answers), plus a one-off `ollama-pull` that downloads it.
-- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only these routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image`, `/favicon/*`, `/stock`, `/answer` and `/answer/warm`.
+- **`avogadro`:** Caddy. It serves `frontend/`, plain HTML, CSS and JavaScript with no build step. It passes only these routes through to SearXNG: `/search?format=json`, `/autocompleter`, `/image`, `/favicon/*`, `/stock`, `/answer`, `/answer/warm` and `/click`.
 
 The atom is drawn in `frontend/cloud.js`. Each dot is a sample from the orbital's probability density |ψ|². The two colours are the two signs of the wavefunction.
+
+### Ranking
+
+SearXNG scores a result by how many engines returned it, multiplied by how high, and then pulls results with a picture together. Bing, DuckDuckGo and Yahoo all serve Bing's index, so whatever Bing ranks arrives as three engines agreeing and can bury Google's first result. `plugins/avogadro_rank.py` orders the results itself:
+
+- **One vote per index.** Each independent index adds `1 / (3 + rank)` for the result's best rank in it; Bing's three engines count as one, and Wikipedia's lone answers count for 0.6.
+- **The site you name.** When the host name spells the search ("byu learning suite" and `learningsuite.byu.edu`, "home depot" and `homedepot.com`), that site's home page comes first.
+- **Pages you open.** `POST /click` (`{"q", "url", "title"}`), sent by the page and the app when you open a result, is appended to `data/clicks/<hostname>.jsonl`. A page you opened for a similar search (one sharing at least half its words) rises, more for repeated and recent opens (half-life 120 days), and comes back on the first page even when no engine returned it this time.
+
+On a fixed set of 16 searches for a known site, the site came first in 14 with SearXNG's order and in all 16 with this one.
 
 ### The stock API
 
@@ -134,7 +146,13 @@ When Turing, an app that runs Gemma 4 on the phone's NPU, is installed, the Andr
 
 4. To make it your browser's search engine, use `https://your-address/?q=%s`.
 
-To serve the same instance from several hosts, give every host the same `.env`; result image links are signed with `SEARXNG_SECRET`.
+Opened results are kept in `data/clicks/`, which the `searxng` container (user 977) must be able to write:
+
+```sh
+mkdir -p data/clicks && chmod 1777 data/clicks
+```
+
+To serve the same instance from several hosts, give every host the same `.env`; result image links are signed with `SEARXNG_SECRET`. Each host appends opened results only to its own file in `data/clicks/` and reads every file there, so any file sync that copies each host's file to the others shares what they learn, without conflicts: for example, a two-way Syncthing folder on `data/clicks/`.
 
 ### The Android app
 
@@ -158,14 +176,16 @@ docker compose restart
 
 ```
 config/settings.yml    SearXNG overrides (engines, plugin, favicon resolver)
-plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>; loads the two below
+plugins/avogadro.py    SearXNG plugin: signed image URLs, /favicon/<host>; loads the three below
 plugins/avogadro_stock.py   /stock: quotes and price series
 plugins/avogadro_answer.py  /answer: cited answers to questions from a local model
+plugins/avogadro_rank.py    the order of results, and /click: what you open
 frontend/              the page: index.html, app.css, app.js, cloud.js, fonts
 android/               the Android app (Kotlin, Compose); build.sh builds and installs it
 logo/                  the mark: orbital.html draws it, render.sh writes the web and Android icons
 Caddyfile              static files, the SearXNG routes, security headers
 docker-compose.yml     the two containers, plus an optional Ollama for answers
+data/clicks/           opened results, one file per host (not in git)
 LICENSE                AGPL-3.0
 ```
 

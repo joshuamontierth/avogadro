@@ -15,6 +15,10 @@ services:
       - ./plugins/avogadro.py:/usr/local/searxng/searx/plugins/avogadro.py:ro
       - ./plugins/avogadro_stock.py:/usr/local/searxng/searx/plugins/avogadro_stock.py:ro
       - ./plugins/avogadro_answer.py:/usr/local/searxng/searx/plugins/avogadro_answer.py:ro
+      - ./plugins/avogadro_rank.py:/usr/local/searxng/searx/plugins/avogadro_rank.py:ro
+      # Results opened from this instance, one file per host (README, "Results you open").
+      - ./data/clicks:/var/lib/avogadro/clicks
+      - /etc/hostname:/etc/avogadro-host:ro
       - searxng_cache:/var/cache/searxng
 
   # The Avogadro page, plus the few SearXNG routes it uses.

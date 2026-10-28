@@ -25,6 +25,10 @@ for other clients; see ``avogadro_stock``.
 
 Answers. ``/answer`` writes a short, cited answer to a question from the top
 results' pages with a local model; see ``avogadro_answer``.
+
+Order. Results are ordered by one vote per independent index, the site a search
+names and the pages you open (``POST /click``), not by SearXNG's score and
+grouping; see ``avogadro_rank``.
 """
 
 import logging
@@ -39,7 +43,7 @@ from searx import settings
 from searx.favicons.proxy import search_favicon
 from searx.webutils import new_hmac
 
-from . import Plugin, PluginInfo, avogadro_answer, avogadro_stock
+from . import Plugin, PluginInfo, avogadro_answer, avogadro_rank, avogadro_stock
 
 if t.TYPE_CHECKING:
     from searx.extended_types import SXNG_Request
@@ -250,6 +254,14 @@ def process(search: t.Any, result: t.Any) -> None:
     # image URLs may travel that way.
     swap_images(result)
     merge_copies(search, result)
+    # Ranks count once copies share a URL, so the page gets every copy's votes.
+    url = get_field(result, "url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        avogadro_rank.note(search, result, rank_key(url))
+
+
+def rank_key(url: str) -> str:
+    return page_key(desktop_url(url))
 
 
 def favicon(host: str):
@@ -276,7 +288,7 @@ class SXNGPlugin(Plugin):
         self.info = PluginInfo(
             id=self.id,
             name="Avogadro",
-            description="Merge copies of the same page, serve result images and favicons through this instance, serve stock quotes, and answer questions from the results",
+            description="Merge copies of the same page, order results by index and by what you open, serve result images and favicons through this instance, serve stock quotes, and answer questions from the results",
             preference_section="privacy",
         )
 
@@ -285,10 +297,12 @@ class SXNGPlugin(Plugin):
         app.add_url_rule("/stock", endpoint="avogadro_stock", view_func=avogadro_stock.view)
         app.add_url_rule("/answer", endpoint="avogadro_answer", view_func=avogadro_answer.view, methods=["POST"])
         app.add_url_rule("/answer/warm", endpoint="avogadro_answer_warm", view_func=avogadro_answer.warm, methods=["POST"])
+        app.add_url_rule("/click", endpoint="avogadro_click", view_func=avogadro_rank.click, methods=["POST"])
         return True
 
     def pre_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> bool:
         search.avogadro_aliases = Aliases()  # type: ignore[attr-defined]
+        search.avogadro_plan = avogadro_rank.Plan()  # type: ignore[attr-defined]
         return True
 
     def on_result(self, request: "SXNG_Request", search: "SearchWithPlugins", result: "Result") -> bool:
@@ -298,3 +312,4 @@ class SXNGPlugin(Plugin):
     def post_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> None:
         for box in search.result_container.infoboxes:
             swap_images(box)
+        avogadro_rank.install(search, rank_key)

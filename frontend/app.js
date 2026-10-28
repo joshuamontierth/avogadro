@@ -1136,6 +1136,18 @@
     }
   });
 
+  // ---------- opened results ----------
+  // Tell the instance which page a search led to; a similar search ranks it higher next time.
+  function opened(e) {
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    const url = a && safeUrl(a.href);
+    if (!url || !state.q || !root.classList.contains("is-results") || new URL(url).origin === location.origin) return;
+    const title = [...document.querySelectorAll("a.r-title")].find((t) => t.href === url)?.textContent || "";
+    navigator.sendBeacon("/click", JSON.stringify({ q: state.q, url, title }));
+  }
+  document.addEventListener("click", opened, true);
+  document.addEventListener("auxclick", (e) => { if (e.button === 1) opened(e); }, true);
+
   // ---------- image viewer ----------
 
   let vIndex = -1, vReturn = null;

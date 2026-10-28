@@ -4,6 +4,9 @@
 # The published Android app (android/build.sh publish).
 frontend/apk/
 
+# Results opened from this instance (plugins/avogadro_rank.py).
+data/
+
 # Agent and design-process files (Impeccable's product record, design system and working files).
 PRODUCT.md
 DESIGN.md

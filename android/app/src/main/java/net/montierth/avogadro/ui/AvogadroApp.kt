@@ -52,7 +52,12 @@ fun AvogadroApp(vm: SearchViewModel) {
     var viewer by remember { mutableStateOf<Int?>(null) }
     val update by vm.update.collectAsStateWithLifecycle()
 
-    val open: (String) -> Unit = { url -> Format.safeUrl(url)?.let { Links.open(context, it, p) } }
+    val open: (String) -> Unit = { url ->
+        Format.safeUrl(url)?.let {
+            vm.opened(it)
+            Links.open(context, it, p)
+        }
+    }
     val submit: (String) -> Unit = { q ->
         focusManager.clearFocus()
         keyboard?.hide()

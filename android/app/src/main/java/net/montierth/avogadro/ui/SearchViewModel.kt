@@ -339,6 +339,14 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         suggestions = emptyList()
     }
 
+    /** A page opened from the results: the instance learns which page this search led to. */
+    fun opened(url: String) {
+        val q = results.query.trim()
+        if (screen != Screen.Results || q.isEmpty()) return
+        val title = results.hits.firstOrNull { it.url == url }?.let { Format.plain(it.title) }.orEmpty()
+        viewModelScope.launch { api.click(q, url, title) }
+    }
+
     fun markVisited(url: String) {
         visited[url] = true
     }
