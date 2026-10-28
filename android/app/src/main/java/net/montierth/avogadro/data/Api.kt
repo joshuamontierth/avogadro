@@ -1,5 +1,6 @@
 package net.montierth.avogadro.data
 
+import android.content.Context
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -191,6 +192,33 @@ class Api(private val client: OkHttpClient = defaultClient()) {
         }
     }.flowOn(Dispatchers.IO)
 
+    /** The same answer written on this phone by Turing: the instance reads the pages and builds the
+     *  prompt ("local": true), Turing writes, and its words are relayed the way the instance relays its
+     *  own model's (see [relayed]). An answer the instance's model already gave comes back as it is. */
+    fun answerOnDevice(context: Context, q: String, sources: List<Source>): Flow<String> = flow {
+        val body = buildJsonObject {
+            put("q", q)
+            put("local", true)
+            put("model", "Turing")
+            putJsonArray("results") {
+                sources.forEach { s -> addJsonObject { put("url", s.url); put("title", s.title); put("content", s.content) } }
+            }
+        }.toString().toRequestBody(JSON)
+        val prompt = client.newCall(Request.Builder().url("$BASE_URL/answer").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+            Json.parseToJsonElement(r.body.string()).jsonObject
+        }
+        prompt.str("answer")?.let { emit(it); return@flow }
+        val system = prompt.str("system") ?: throw IOException("no prompt from the instance")
+        val user = prompt.str("user") ?: throw IOException("no prompt from the instance")
+        var raw = ""
+        Turing.write(context, system, user).collect { text ->
+            raw = text
+            relayed(text, done = false)?.takeIf { it.isNotEmpty() }?.let { emit(it) }
+        }
+        emit(relayed(raw, done = true) ?: "")
+    }.flowOn(Dispatchers.IO)
+
     /** Wakes the instance's model ahead of a question; nothing comes back. */
     suspend fun warm() = withContext(Dispatchers.IO) {
         runCatching {
@@ -207,6 +235,24 @@ class Api(private val client: OkHttpClient = defaultClient()) {
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
     }
+}
+
+// ---------- relaying an answer ----------
+
+private val KIND_LINE = Regex("^kind:([^\\n]*)\\n", RegexOption.IGNORE_CASE)
+
+/** What of [raw] the model has written so far is shown, as plugins/avogadro_answer.py relays its own
+ *  model: the "Kind:" line held back and dropped, the first few characters held back to catch NONE,
+ *  "" for NONE or "Kind: none", null while either may still be coming. */
+internal fun relayed(raw: String, done: Boolean): String? {
+    var s = raw.trimStart()
+    if ("kind:".startsWith(s.take(5).lowercase())) {
+        val m = KIND_LINE.find(s) ?: return if (done) "" else null
+        if (m.groupValues[1].trim().lowercase().startsWith("none")) return ""
+        s = s.substring(m.range.last + 1).trimStart()
+    }
+    if (s.length < 5 && !done) return null
+    return if (s.uppercase().startsWith("NONE")) "" else s.trimEnd()
 }
 
 // ---------- tolerant JSON mapping ----------

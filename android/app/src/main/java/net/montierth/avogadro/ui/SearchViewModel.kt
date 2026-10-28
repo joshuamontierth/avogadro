@@ -20,6 +20,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import net.montierth.avogadro.AvogadroApplication
@@ -31,6 +34,7 @@ import net.montierth.avogadro.data.Hit
 import net.montierth.avogadro.data.Infobox
 import net.montierth.avogadro.data.Quote
 import net.montierth.avogadro.data.Source
+import net.montierth.avogadro.data.Turing
 import net.montierth.avogadro.data.Tickers
 
 enum class Screen { Home, Results }
@@ -165,12 +169,16 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         if (changed && results.category == "general" && Ask.intent(value.text.trim())) warm()
     }
 
-    /** Typing a question wakes the model, so it is ready by the time the results are. */
+    /** Typing a question wakes the model, so it is ready by the time the results are: Turing's on
+     *  the phone when it's installed, else the instance's. */
     private fun warm() {
         val now = System.currentTimeMillis()
         if (now - warmedAt < 60_000) return
         warmedAt = now
-        viewModelScope.launch { api.warm() }
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            if (Turing.available(app)) withContext(Dispatchers.IO) { Turing.warm(app) } else api.warm()
+        }
     }
 
     fun search(query: String, category: String = results.category, time: String = results.time) {
@@ -235,9 +243,23 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
         try {
             var text = ""
-            api.answer(q, sources).collect { so ->
+            suspend fun show(answer: Flow<String>) = answer.collect { so ->
                 text = so
                 if (so.isNotBlank()) update(results.ask?.copy(text = so))
+            }
+            val app = getApplication<Application>()
+            if (Turing.available(app)) {
+                try {
+                    show(api.answerOnDevice(app, q, sources))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Turing failed before writing anything: the instance's model answers as usual.
+                    if (text.isNotBlank()) throw e
+                    show(api.answer(q, sources))
+                }
+            } else {
+                show(api.answer(q, sources))
             }
             update(if (text.isBlank()) null else results.ask?.copy(text = text, done = true))
         } catch (e: CancellationException) {

@@ -24,6 +24,11 @@ How it stays quick and close to its sources:
 ``POST /answer/warm`` loads the model and clears its cache ahead of a question (the page
 calls it while one is being typed), at most once a minute. Answers are cached for an hour; an empty one is not.
 
+With ``"local": true`` (and optionally ``"model"``, for the log) the client writes the answer with its own
+model, such as the Android app with Turing on the phone: the pages are read the same way, but the reply is
+JSON, ``{"system": ..., "user": ...}``, the prompt this server would have sent, or ``{"answer": ...}`` when
+this server's model already answered. The model here isn't loaded, held or asked; answers off doesn't matter.
+
 Settings come from the environment: ``OLLAMA_URL`` (unset turns answers off),
 ``OLLAMA_MODEL`` and ``ANSWER_HOLD_URL``, an optional URL that is sent
 ``{"seconds": n}`` when an answer starts (n > 0) and ends (n = 0), so a batch job sharing
@@ -404,6 +409,10 @@ def system() -> str:
     return SYSTEM.format(today=dt.date.today().isoformat())
 
 
+def user_turn(q: str, prompt: str) -> str:
+    return f"<sources>\n{prompt}\n</sources>\n\nQuestion: {q}\n\n{REMINDER}"
+
+
 def flush() -> None:
     """Loads the model if needed and leaves only the system prompt in its cache."""
     try:
@@ -502,11 +511,14 @@ def clean(r: t.Any) -> dict | None:
 
 
 def view() -> flask.Response:
-    if not OLLAMA_URL:
-        return reply("answers are off", 503)
     if not flask.request.is_json or (flask.request.content_length or 0) > 65536:
         return reply("send JSON", 400)
     body = flask.request.get_json(silent=True) or {}
+    # A client with its own model on the device ("local": true, the Android app with Turing) gets the
+    # prompt instead of an answer: the pages are read here as usual, and the model here is left alone.
+    local = body.get("local") is True
+    if not OLLAMA_URL and not local:
+        return reply("answers are off", 503)
     q = SPACE.sub(" ", str(body.get("q") or "")).strip()
     results = [r for r in map(clean, body.get("results") or []) if r][:MAX_SOURCES]
     if not q or len(q) > 300 or not results:
@@ -514,6 +526,8 @@ def view() -> flask.Response:
 
     key = json.dumps([q.lower(), [r["url"] for r in results]])
     hit = answers.get(key)
+    if local:
+        return local_prompt(q, results, hit, str(body.get("model") or "a local model")[:60])
     if hit is not None:
         return reply(hit)
 
@@ -533,7 +547,7 @@ def view() -> flask.Response:
             "options": {"temperature": 0.1, "num_predict": 200},
             "messages": [
                 {"role": "system", "content": system()},
-                {"role": "user", "content": f"<sources>\n{prompt}\n</sources>\n\nQuestion: {q}\n\n{REMINDER}"},
+                {"role": "user", "content": user_turn(q, prompt)},
             ],
         }, 30)
     except (urllib.error.URLError, OSError) as e:
@@ -545,6 +559,23 @@ def view() -> flask.Response:
     out.headers["Server-Timing"] = (f'pages;dur={(fetched - start) * 1000:.0f};desc="{sum(map(bool, pages))}/{len(pages)} pages, '
                                     f'{len(prompt)} chars", model;dur={(time.monotonic() - fetched) * 1000:.0f}')
     out.headers["X-Accel-Buffering"] = "no"
+    return out
+
+
+def local_prompt(q: str, results: list[dict], hit: str | None, model: str) -> flask.Response:
+    """The system prompt and user turn for an answer the client's own model writes. The client relays it
+    the way stream() does: without the "Kind:" line, and nothing for NONE. An answer this server's model
+    already gave comes back instead, as {"answer": ...}."""
+    if hit is not None:
+        out = flask.jsonify({"answer": hit})
+    else:
+        start = time.monotonic()
+        pages = gather([pool.submit(read_page, r["url"]) for r in results], start)
+        prompt = sources_text(q, results, pages)
+        log.info("answer written on the device by %s: %d chars from %d/%d pages", model, len(prompt),
+                 sum(map(bool, pages)), len(pages))
+        out = flask.jsonify({"system": system(), "user": user_turn(q, prompt)})
+    out.headers["Cache-Control"] = "no-store"
     return out
 
 
