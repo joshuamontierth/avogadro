@@ -6,11 +6,12 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 
 /** Turing, the app that runs Gemma 4 on the phone's NPU. When it's installed, answers are written on
  *  the phone instead of by the instance's model (README, "Answers written on the phone"). Turing loads
@@ -40,10 +41,17 @@ object Turing {
             .appendQueryParameter("temperature", "0.1")
             .build()
         val input = context.contentResolver.openInputStream(uri) ?: throw IOException("Turing returned no stream")
-        // A new search cancels this collector; closing the stream ends Turing's run.
-        val stop = currentCoroutineContext().job.invokeOnCompletion { runCatching { input.close() } }
-        try {
-            input.use {
+        input.use {
+            coroutineScope {
+                // Cancelling (a new search, or Turing silent for too long) closes the stream at once: that
+                // ends a read still waiting for Turing, and Turing's run.
+                val hangUp = launch {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        runCatching { input.close() }
+                    }
+                }
                 val bytes = ByteArrayOutputStream()
                 val chunk = ByteArray(1024)
                 while (true) {
@@ -54,9 +62,8 @@ object Turing {
                     emit(bytes.toString(Charsets.UTF_8.name()).trimEnd('�'))
                 }
                 emit(bytes.toString(Charsets.UTF_8.name()))
+                hangUp.cancel()
             }
-        } finally {
-            stop.dispose()
         }
     }.flowOn(Dispatchers.IO)
 }

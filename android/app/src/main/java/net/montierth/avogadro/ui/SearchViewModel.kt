@@ -17,6 +17,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -254,10 +255,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // Turing failed before writing anything: the instance's model answers as usual.
+                    currentCoroutineContext().ensureActive()
                     if (text.isNotBlank()) throw e
-                    show(api.answer(q, sources))
                 }
+                // Turing showed nothing (it failed, stayed silent, or wrote no answer): the instance's
+                // model, which reads the same pages, has its turn.
+                if (text.isBlank()) show(api.answer(q, sources))
             } else {
                 show(api.answer(q, sources))
             }

@@ -5,11 +5,15 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.timeout
 import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -194,7 +198,9 @@ class Api(private val client: OkHttpClient = defaultClient()) {
 
     /** The same answer written on this phone by Turing: the instance reads the pages and builds the
      *  prompt ("local": true), Turing writes, and its words are relayed the way the instance relays its
-     *  own model's (see [relayed]). An answer the instance's model already gave comes back as it is. */
+     *  own model's (see [relayed]). An answer the instance's model already gave comes back as it is.
+     *  Throws when Turing fails, or goes [TURING_SILENCE] without a word. */
+    @OptIn(FlowPreview::class)
     fun answerOnDevice(context: Context, q: String, sources: List<Source>): Flow<String> = flow {
         val body = buildJsonObject {
             put("q", q)
@@ -212,9 +218,13 @@ class Api(private val client: OkHttpClient = defaultClient()) {
         val system = prompt.str("system") ?: throw IOException("no prompt from the instance")
         val user = prompt.str("user") ?: throw IOException("no prompt from the instance")
         var raw = ""
-        Turing.write(context, system, user).collect { text ->
-            raw = text
-            relayed(text, done = false)?.takeIf { it.isNotEmpty() }?.let { emit(it) }
+        try {
+            Turing.write(context, system, user).timeout(TURING_SILENCE).collect { text ->
+                raw = text
+                relayed(text, done = false)?.takeIf { it.isNotEmpty() }?.let { emit(it) }
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw IOException("Turing wrote nothing for $TURING_SILENCE", e)
         }
         emit(relayed(raw, done = true) ?: "")
     }.flowOn(Dispatchers.IO)
@@ -238,6 +248,9 @@ class Api(private val client: OkHttpClient = defaultClient()) {
 
     companion object {
         private val JSON = "application/json".toMediaType()
+
+        /** How long Turing may go without a word (it loads its model in about 11 s from cold) before the instance answers. */
+        private val TURING_SILENCE = 25.seconds
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)

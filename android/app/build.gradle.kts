@@ -30,8 +30,8 @@ android {
         applicationId = "net.montierth.avogadro"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.1"
+        versionCode = 8
+        versionName = "0.4.2"
         buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     }
 

@@ -119,7 +119,7 @@ If a batch job shares the model, set `ANSWER_HOLD_URL` to an endpoint of that jo
 
 #### Answers written on the phone
 
-When Turing, an app that runs Gemma 4 on the phone's NPU, is installed, the Android app writes answers with it, on the device, instead of with the instance's model: typing a question warms Turing's model instead of `POST /answer/warm`, and the app sends `"local": true` with the question. The server still reads the pages and builds the prompt, but replies with it as JSON, `{"system": ..., "user": ...}`, without touching its own model (or `{"answer": ...}` when its model already answered the same question). The app relays Turing's words the way the server relays its model's: without the "Kind:" line, and nothing for NONE. If Turing fails before writing anything, the app asks the instance's model as usual.
+When Turing, an app that runs Gemma 4 on the phone's NPU, is installed, the Android app writes answers with it, on the device, instead of with the instance's model: typing a question warms Turing's model instead of `POST /answer/warm`, and the app sends `"local": true` with the question. The server still reads the pages and builds the prompt, but replies with it as JSON, `{"system": ..., "user": ...}`, without touching its own model (or `{"answer": ...}` when its model already answered the same question). The app relays Turing's words the way the server relays its model's: without the "Kind:" line, and nothing for NONE. If Turing shows nothing (it fails, goes 25 seconds without a word, or writes no answer), the app asks the instance's model as usual.
 
 ## Setup
 
